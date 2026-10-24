@@ -925,6 +925,229 @@ end
 _G._BYPASS_Execute = _BYPASS_Execute
 end -- V9.5 integration: exported callback retains the scoped helpers.
 
+-- ========================================================================
+-- NEW ENGINE WALL HACK (RED/GREEN) - ADDED HERE
+-- ========================================================================
+-- Ensure config exists so menu toggle works
+_G.LexusConfig = _G.LexusConfig or {}
+_G.LexusConfig.ColorBodyNew = _G.LexusConfig.ColorBodyNew or false
+
+local function Valid(obj) 
+    if not obj then return false end 
+    if slua and slua.isValid then 
+        local ok, v = pcall(slua.isValid, obj) 
+        if not ok or not v then return false end 
+    end 
+    return true 
+end
+
+local function GetAllSkeletalMeshes(enemy, markData)
+    local curTime = os.clock()
+    if markData and markData.CachedMeshes and markData.CachedMeshTime and (curTime - markData.CachedMeshTime < 0.5) then
+        local validMeshes = {}
+        for _, cachedMesh in ipairs(markData.CachedMeshes) do
+            local isPendingKill = false
+            pcall(function() if type(cachedMesh.IsPendingKill) == "function" then isPendingKill = cachedMesh:IsPendingKill() end end)
+            if Valid(cachedMesh) and not isPendingKill then 
+                table.insert(validMeshes, cachedMesh) 
+            end
+        end
+        markData.CachedMeshes = validMeshes
+        return validMeshes
+    end
+
+    local meshes = {}
+    if Valid(enemy.Mesh) then table.insert(meshes, enemy.Mesh) end
+    pcall(function()
+        local SkeletalMeshClass = import("SkeletalMeshComponent")
+        if SkeletalMeshClass and type(enemy.GetComponentsByClass) == "function" then
+            local childs = enemy:GetComponentsByClass(SkeletalMeshClass)
+            if childs then
+                local count = type(childs.Num) == "function" and childs:Num() or #childs
+                for i = 1, count do
+                    local comp = type(childs.Get) == "function" and childs:Get(i-1) or childs[i]
+                    if Valid(comp) and comp ~= enemy.Mesh then
+                        table.insert(meshes, comp)
+                    end
+                end
+            end
+        end
+    end)
+    if markData then
+        markData.CachedMeshes = meshes
+        markData.CachedMeshTime = curTime
+    end
+    return meshes
+end
+
+local function ApplyColorBodyNew(enemy, markData)
+    pcall(function()
+        if not _G.ConsoleNewWallReady then
+            local KismetSystemLibrary = import("KismetSystemLibrary")
+            local world = slua.getWorld()
+            if KismetSystemLibrary and world then
+                KismetSystemLibrary.ExecuteConsoleCommand(world, "r.EnableDrawDyeingColor 1")
+                KismetSystemLibrary.ExecuteConsoleCommand(world, "r.CustomDepth 3")
+                KismetSystemLibrary.ExecuteConsoleCommand(world, "r.IdeaOutline.Enable 1")
+                KismetSystemLibrary.ExecuteConsoleCommand(world, "r.Highlight.Enable 1")
+                _G.ConsoleNewWallReady = true
+            end
+        end
+
+        local meshes = GetAllSkeletalMeshes(enemy, markData)
+        
+        local weapon = nil
+        pcall(function() weapon = enemy:GetCurrentWeapon() end)
+        if slua.isValid(weapon) and slua.isValid(weapon.Mesh) then
+            table.insert(meshes, weapon.Mesh)
+        end
+
+        local isBot = markData.AK_IS_BOT or false
+        local currentMeshCount = #meshes
+        
+        local stateHash = (isBot and "BOT" or "PLAYER") .. "_" .. tostring(currentMeshCount)
+        
+        if markData.LastColorNewHash == stateHash and markData.ColorNewApplied then
+            return
+        end
+        
+        markData.LastColorNewHash = stateHash
+        markData.ColorNewApplied = true
+
+        local LinearColorClass = import("LinearColor") or _G.FLinearColor
+        local c_vis = LinearColorClass and LinearColorClass(0, 100, 0, 1) or {R=0, G=100, B=0, A=1}
+        local c_occ = LinearColorClass and LinearColorClass(100, 0, 0, 1) or {R=100, G=0, B=0, A=1}
+        local c_bVis = LinearColorClass and LinearColorClass(49, 48, 0, 100) or {R=49, G=48, B=0, A=100}
+        local c_bOcc = LinearColorClass and LinearColorClass(9, 1.5, 45, 100) or {R=9, G=1.5, B=45, A=100}
+
+        local visColor = isBot and c_bVis or c_vis
+        local occColor = isBot and c_bOcc or c_occ
+
+        for _, mesh in ipairs(meshes) do
+            if Valid(mesh) then
+                pcall(function()
+                    if type(mesh.SetDrawDyeing) == "function" then
+                        mesh:SetDrawDyeing(true)
+                        mesh:SetDrawDyeingMode(1)
+                        mesh:SetVisibleDyeingColor(visColor)
+                        mesh:SetOccludedDyeingColor(occColor)
+                        mesh:SetDyeingColorFadeDistance(99999.0)
+                        mesh:SetDyeingColorMinMaxDistance(0.0, 99999.0)
+                        mesh:SetDrawHighlight(true)
+                        mesh:OverrideHighlightColor(visColor)
+                        mesh:SetHighlightCanBeOccluded(false)
+                        mesh:SetDrawIdeaOutline(true)
+                        mesh:SetIdeaOutlineNew(true)
+                        mesh:SetIdeaOutlineOcclusionHighlight(true)
+                        mesh:OverrideIdeaOutlineColor(visColor)
+                        mesh:SetIdeaOutlineOcclusionColor(occColor)
+                        mesh:OverrideIdeaOutlineThickness(20.0)
+                        mesh:SetIdeaOverrideOutlineAndOcclusion(true)
+                        mesh:SetRenderCustomDepth(true)
+                        mesh:SetCustomDepthStencilValue(255)
+                    end
+                end)
+            end
+        end
+    end)
+end
+
+local function UndoColorBodyNew(enemy, markData)
+    pcall(function()
+        if markData.ColorNewApplied then
+            local meshes = GetAllSkeletalMeshes(enemy, markData)
+            local weapon = nil
+            pcall(function() weapon = enemy:GetCurrentWeapon() end)
+            if slua.isValid(weapon) and slua.isValid(weapon.Mesh) then
+                table.insert(meshes, weapon.Mesh)
+            end
+
+            for _, mesh in ipairs(meshes) do
+                if Valid(mesh) then
+                    pcall(function()
+                        if type(mesh.SetDrawDyeing) == "function" then
+                            mesh:SetDrawDyeing(false)
+                            mesh:SetDrawHighlight(false)
+                            mesh:SetDrawIdeaOutline(false)
+                            mesh:SetRenderCustomDepth(false)
+                        end
+                    end)
+                end
+            end
+            markData.ColorNewApplied = false
+            markData.LastColorNewHash = ""
+        end
+    end)
+end
+
+-- ========================================================================
+-- NEW ENGINE WALL HACK - AUTO LOOP (This makes it work)
+-- ========================================================================
+local function _StartNewEngineWallHackLoop()
+    if _G._NewEngineWallHackLoopStarted then return end
+    _G._NewEngineWallHackLoopStarted = true
+
+    local function RunWallHackLoop()
+        if not _G.LexusConfig or not _G.LexusConfig.ColorBodyNew then return end
+
+        local pc = nil
+        pcall(function() 
+            local GDP = require("GameLua.GameCore.Data.GameplayData")
+            pc = GDP.GetPlayerController() 
+        end)
+        
+        if not pc or not slua.isValid(pc) then return end
+
+        local localPlayer = nil
+        pcall(function() localPlayer = pc:GetPlayerCharacterSafety() end)
+        if not localPlayer or not slua.isValid(localPlayer) then return end
+
+        local allCharacters = {}
+        pcall(function()
+            local GDP = require("GameLua.GameCore.Data.GameplayData")
+            if GDP.GetAllPlayerCharacters then
+                allCharacters = GDP.GetAllPlayerCharacters()
+            elseif GDP.GameCharacters then
+                for _, char in pairs(GDP.GameCharacters) do table.insert(allCharacters, char) end
+            end
+        end)
+
+        local myTeam = localPlayer:GetTeamID()
+
+        for _, enemy in pairs(allCharacters) do
+            if slua.isValid(enemy) and enemy ~= localPlayer then
+                local isAlive = enemy:IsAlive()
+                local enemyTeam = enemy:GetTeamID()
+
+                if isAlive and enemyTeam ~= myTeam then
+                    local eKey = tostring(enemy.PlayerKey or enemy)
+                    _G.LexusState.EnemyMarks = _G.LexusState.EnemyMarks or {}
+                    _G.LexusState.EnemyMarks[eKey] = _G.LexusState.EnemyMarks[eKey] or {}
+                    local markData = _G.LexusState.EnemyMarks[eKey]
+
+                    if _G.LexusConfig.ColorBodyNew then 
+                        ApplyColorBodyNew(enemy, markData)
+                    else
+                        UndoColorBodyNew(enemy, markData)
+                    end
+                end
+            end
+        end
+    end
+
+    pcall(function()
+        local ticker = require("common.time_ticker")
+        if ticker and ticker.AddTimerLoop then
+            ticker.AddTimerLoop(0, RunWallHackLoop, -1, 0.1)
+        end
+    end)
+end
+
+_StartNewEngineWallHackLoop()
+-- ========================================================================
+-- END NEW ENGINE WALL HACK
+-- ========================================================================
+
 -- ============================================================================
 -- ============================================================================
 -- BYPASS END
@@ -1491,7 +1714,10 @@ do
         {Key="LunarAim",UI=AliasMap.Switcher,Text="Aimbot V1",ExpandIndex=0,
             EventType=F.AimSettingsEventType,EventID=F.AimSettingsEventID,
             GetFunc=function() return featureState().Settings.AimEnabled end,
-            SetFunc=function(c,v) featureState().SetAim(value(c,v));return true end}
+            SetFunc=function(c,v) featureState().SetAim(value(c,v));return true end},
+        {Key="ModMenu_NewEngineWall",UI=AliasMap.Switcher,Text="New Engine Wall Hack", 
+            GetFunc=function() return _G.LexusConfig.ColorBodyNew end, 
+            SetFunc=function(c,v) _G.LexusConfig.ColorBodyNew = v return true end}
     }
     -- Verified native settings item contract: absolute Min/Max values, native
     -- key/value callbacks, and expansion events owned by the game's page.
@@ -4969,8 +5195,7 @@ do
                     if not ok and (not A.ApplyFailed or not A.ApplyFailed[key]) then
                         A.ApplyFailed=A.ApplyFailed or {};A.ApplyFailed[key]=true;F.Error("Aim2.Apply."..key,err)
                     end
-                end
-            elseif not A.Unsupported or not A.Unsupported[key] then
+                end            elseif not A.Unsupported or not A.Unsupported[key] then
                 A.Unsupported=A.Unsupported or {};A.Unsupported[key]=true
                 F.Error("Aim2.Unsupported",key.." is unreadable; left unchanged")
             end
@@ -5372,24 +5597,12 @@ local function ShowExpiryPopup(expired)
     pcall(function()
         local Msg = package.loaded["client.slua.logic.common.logic_common_msg_box"] or require("client.slua.logic.common.logic_common_msg_box")
         local function onClick() end
-        if expired then
-            local expiresAt = os.date("!%Y-%m-%d %H:%M:%S UTC", EXPIRY_TIMESTAMP)
-            Msg.Show(4, "MOD EXPIRED", "THIS MOD HAS EXPIRED.\n\nEXPIRED ON: " .. expiresAt .. "\n\nTEXT Me to buy PRIME", onClick)
-        else
-            local remaining = _G._MOD_REMAINING_SECONDS or (EXPIRY_TIMESTAMP - os.time())
-            local formatted = FormatTimeRemaining(remaining)
-            local expiresAt = os.date("!%Y-%m-%d %H:%M:%S UTC", EXPIRY_TIMESTAMP)
-            Msg.Show(4, "NOTIFICATION", "MOD VALIDITY: " .. formatted .. "\nEXPIRES AT: " .. expiresAt .. "\n\nFOR RENEWAL DM PRIME", onClick)
-        end
+        Msg.Show(4, "NOTIFICATION", "Play Safe & Avoid Reports\nMust Send Feedbacks", onClick)
     end)
 end
 
 function _G.TryShowWelcome()
     if _G.WelcomeShown then return end
-    if not CheckExpiration() then
-        ShowExpiryPopup(true)
-        return
-    end
     ShowExpiryPopup(false)
     _G.WelcomeShown = true
 end
@@ -5405,7 +5618,7 @@ function ShowLexusVIPMenu()   -- keep same name as your MainLoop call
         if not Msg or not Msg.Show then return end
 
         local function Step_ScamAlert()
-            Msg.Show(1, "UX_Official  MODS🔥4.6 PAK", "DON'T PLAY LIKE A ANIMAL \nAVOID REPORTS PLAY SAFE!!\n\nNO FEEDBACK - NO MORE UPDATES", 
+            Msg.Show(1, "Paid VIP", "DON'T PLAY LIKE A ANIMAL \nAVOID REPORTS PLAY SAFE!!\n\nNO FEEDBACK - NO MORE UPDATES", 
                 function() 
                     local Web = require("client.slua.logic.url.logic_webview_sdk")
                     if Web and Web.OpenURL then Web:OpenURL("https://wa.me/923709241014") end
@@ -5417,7 +5630,7 @@ function ShowLexusVIPMenu()   -- keep same name as your MainLoop call
         end
 
         local function Step_Welcome()
-            Msg.Show(1, "PRIME VIP", "ACTIVATION SUCCESSFUL!\n\nThis Is Paid Mode Leaked By UX_Official  MODS DM THE OWNER TO GET YOUR FILE.\nAVOID THE SCAMMERS AND COPY PASTERS, THE REAL OWNER PRIME ",
+            Msg.Show(1, "PRIME VIP", "ACTIVATION SUCCESSFUL!\n\nThis Is Paid Mode Leaked By   Paid VIP DM THE OWNER TO GET YOUR FILE.\nAVOID THE SCAMMERS AND COPY PASTERS, THE REAL OWNER PRIME ",
                 function() 
                     _G.InitModMenuTab()
                     Notify("VIP MOD MENU BY l PRIME to toggle features!")
@@ -5438,8 +5651,7 @@ pcall(function()
     if ok and tk and tk.AddTimerOnce then
         tk.AddTimerOnce(3, function() pcall(CheckExpiration) end)
         tk.AddTimerOnce(4, function()
-            if not CheckExpiration() then pcall(ShowExpiryPopup, true)
-            else pcall(_G.TryShowWelcome) end
+            pcall(_G.TryShowWelcome)
         end)
     else
         pcall(_G.TryShowWelcome)
