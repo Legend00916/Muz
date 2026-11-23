@@ -1,4 +1,5 @@
-local BRPlayerCharacterBase = {
+y=' .. P.form_encode(key)
+      local BRPlayerCharacterBase = {
   ServerRPC = {},
   ClientRPC = {},
   MulticastRPC = {},
@@ -60,7 +61,7 @@ local PrimeeLicenseConfig = (function()
         url = 'https://prime.api-panel.top/connect', game = 'PUBGM',
         verrr = '1.0.0', -- CHANGE THIS to match app_update.status_fit where name_fit = 'appversion'
         c_rng = '0',
-        timeout = 10, clockSkew = 120, expiryPath = nil,
+        timeout = 25, clockSkew = 120, expiryPath = nil,
         manualExpiry = "2026-12-31 23:59:59", tamperTolerance = 5,
         secret = 'Vm8Lk7Uj2JmsjCPVPVjrLa7zgfx3uz9E',
     }
@@ -410,8 +411,10 @@ local PrimeeLicenseCore = (function()
                 end
                 generation = generation + 1
                 local requestId = generation
+                local okStartWall, startWall = pcall(deps.wall)
                 pending = {id = requestId, key = key, serial = serial,
-                           started = now, world = world, deadline = now + cfg.timeout}
+                           started = now, startedWall = (okStartWall and finite(startWall)) and startWall or nil,
+                           world = world, deadline = now + cfg.timeout + 5}
                 notify('Signing in...', 'pending')
                 if not pending or pending.id ~= requestId or generation ~= requestId then return false end
                 local c_rng = tostring(cfg.c_rng or '0')
@@ -423,9 +426,21 @@ local PrimeeLicenseCore = (function()
                 local function received(success, raw)
                     if not pending or pending.id ~= requestId or generation ~= requestId then return end
                     local current, worldNow = readClock()
-                    if not current or worldNow ~= pending.world or current < pending.started
-                        or current >= pending.deadline then
-                        revoke('Request expired. Please sign in again.', 'error'); return
+                    local okWallNow, wallNow = pcall(deps.wall)
+                    local rtt
+                    if current and worldNow == pending.world and current >= pending.started then
+                        rtt = current - pending.started
+                    else
+                        current = current or pending.started
+                        worldNow = worldNow or pending.world
+                        if okWallNow and finite(wallNow) and finite(pending.startedWall) and wallNow >= pending.startedWall then
+                            rtt = wallNow - pending.startedWall
+                        else
+                            rtt = 0
+                        end
+                    end
+                    if rtt >= (cfg.timeout + 5) then
+                        revoke('Request timed out. Please sign in again.', 'error'); return
                     end
                     if success ~= true or type(raw) ~= 'string' or #raw == 0 or #raw > 2097152 then
                         revoke('Connection failed. Please try again.', 'error'); return
@@ -452,7 +467,7 @@ local PrimeeLicenseCore = (function()
                     end
                     if localExpiry then
                         local accepted, text, state = localExpiry.Accept(
-                            serverRng, current, worldNow, wall, current - pending.started)
+                            serverRng, current, worldNow, wall, rtt)
                         if not accepted then revoke(text, state); return end
                     elseif math.abs(wall - serverRng) > cfg.clockSkew then
                         revoke('Phone/server clock mismatch. Check automatic time.', 'error'); return
@@ -461,12 +476,12 @@ local PrimeeLicenseCore = (function()
                     if not validExpiry then
                         revoke('Configured server expiry field is missing or invalid.', 'error'); return
                     end
-                    if expiry and expiry - serverRng - (current - pending.started) <= 0 then
+                    if expiry and expiry - serverRng - rtt <= 0 then
                         revoke('Expired', 'denied'); return
                     end
                     local fixedExpiry = localExpiry and localExpiry.GetExpiry()
                     if fixedExpiry then expiry = math.min(expiry or fixedExpiry, fixedExpiry) end
-                    lastRequestLatencyMs = (current - pending.started) * 1000
+                    lastRequestLatencyMs = rtt * 1000
                     lastResponseTime, lastResponseWorld = current, worldNow
                     pending = nil
                     allowed, expiresAt = true, expiry
@@ -499,10 +514,7 @@ local PrimeeLicenseCore = (function()
             function A.Tick()
                 if not pending then return end
                 local now, world = readClock()
-                if not now or world ~= pending.world or now < pending.started then
-                    revoke('Login interrupted by map loading. Please try again when ready.', 'locked'); return
-                end
-                if now >= pending.deadline then
+                if now and world == pending.world and now >= pending.deadline then
                     revoke('Request timed out. Please try again.', 'error')
                 end
             end
