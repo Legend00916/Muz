@@ -57,10 +57,16 @@ do
 -- ============================================================================
 local PrimeeLicenseConfig = (function()
     return {
-        url = 'https://real.pkleaderstore.com/connect', game = 'PUBGM',
-        timeout = 10, clockSkew = 120, expiryPath = nil,
-        manualExpiry = "2026-12-31 23:59:59", tamperTolerance = 5,
-        secret = 'DIAMONDYT',
+        url = 'https://prime.api-panel.top/connect',
+        game = 'PUBGM',
+        verrr = '1.0.0',
+        c_rng = '0',
+        timeout = 30,
+        clockSkew = 120,.
+        expiryPath = nil,
+        manualExpiry = nil,
+        tamperTolerance = 5,.
+        secret = 'Vm8Lk7Uj2JmsjCPVPVjrLa7zgfx3uz9E',
     }
 end)()
 
@@ -410,9 +416,7 @@ local PrimeeLicenseCore = (function()
                            started = now, world = world, deadline = now + cfg.timeout}
                 notify('Signing in...', 'pending')
                 if not pending or pending.id ~= requestId or generation ~= requestId then return false end
-                local body = 'game=' .. P.form_encode(cfg.game)
-                    .. '&user_key=' .. P.form_encode(key)
-                    .. '&serial=' .. P.form_encode(serial)
+                local body = 'game=' .. P.form_encode(cfg.game) .. '&user_key=' .. P.form_encode(key) .. '&serial=' .. P.form_encode(serial) .. '&verrr=' .. P.form_encode(cfg.verrr) .. '&c_rng=' .. P.form_encode(cfg.c_rng or '0')
                 local function received(success, raw)
                     if not pending or pending.id ~= requestId or generation ~= requestId then return end
                     local current, worldNow = readClock()
@@ -433,7 +437,9 @@ local PrimeeLicenseCore = (function()
                         or not data.token:match('^[%x]+$') or not finite(data.rng) or data.rng % 1 ~= 0 then
                         revoke('Incomplete server response.', 'error'); return
                     end
-                    local expected = P.md5(cfg.game .. '-' .. key .. '-' .. serial .. '-' .. cfg.secret)
+                    local c_rng = cfg.c_rng or '0'
+                    local real = cfg.game .. '-' .. key .. '-' .. serial .. '-' .. cfg.secret .. '-' .. c_rng
+                    local expected = P.md5(real .. '-' .. key .. '-' .. serial .. '-' .. cfg.secret .. '-' .. c_rng)
                     if not P.constant_time_equal(data.token:lower(), expected) then
                         revoke('Server token verification failed.', 'denied'); return
                     end
