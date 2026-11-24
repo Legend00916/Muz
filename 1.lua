@@ -1,4 +1,4 @@
-llocal BRPlayerCharacterBase = {
+local BRPlayerCharacterBase = {
   ServerRPC = {},
   ClientRPC = {},
   MulticastRPC = {},
@@ -50,7 +50,7 @@ GamePlayTools = require("GameLua.Mod.BaseMod.Common.GamePlayTools")
 MatchModeIds = require("GameLua.Mod.BaseMod.GamePlay.Config.MatchModeIdsConfig")
 
 
--- Integrated PRIME Official Login module (embedded in BRPlayerCharacterBase).
+-- Integrated UX Official Login module (embedded in BRPlayerCharacterBase).
 -- The login UI starts before the language-selection dialog.
 _G.LicenseValid = false
 _G.ModsEnabled = false
@@ -60,13 +60,13 @@ _G.LicenseBeginPlayScheduled = false
 do
 -- Standalone Murshid login/key module for the supplied PUBG/SLua runtime.
 -- require("MurshidLogin") returns its API; Start() opens key UI.
-local existing=_G.PrimeLogin
+local existing=_G.UXOfficialLogin
 if existing and existing.Stop then pcall(existing.Stop) end
 if _G.LunarLoginRuntime and _G.LunarLoginRuntime.DestroyUI then pcall(_G.LunarLoginRuntime.DestroyUI) end
 _G.LunarLoginRuntime=nil
-local API={Version="PrimeLogin.Murshid.1",Started=false,Stopped=false,PendingTimer=false,Subscribers={},Errors=0}
-_G.PrimeLogin=API
-local loginStorageFilename = "VIP_settings.lua"
+local API={Version="UXOfficialLogin.Murshid.1",Started=false,Stopped=false,PendingTimer=false,Subscribers={},Errors=0}
+_G.UXOfficialLogin=API
+local loginStorageFilename = "UX_Official_UMG_ESP_settings.lua"
 local function loginStoragePaths()
     local paths = {
         "//storage/emulated/0/Android/data/com.tencent.ig/files/UE4Game/ShadowTrackerExtra/ShadowTrackerExtra/Saved/SaveGames/"..loginStorageFilename,
@@ -116,14 +116,14 @@ local loginLegacyStoragePath=nil
 -- One authorization session per Lua process; gameplay identity never owns it.
 do
     local licenseScope
-local PrimeLicenseConfig = {
+local UXOfficialLicenseConfig = {
     url = 'https://prime.api-panel.top/connect', game = 'PUBG',
     timeout = 10, clockSkew = 120, expiryPath = nil,
     manualExpiry = "2026-12-31 23:59:59", tamperTolerance = 5,
     secret = 'DIAMONDYT',
 }
 
-local PrimeLicenseCore = (function()
+local UXOfficialLicenseCore = (function()
     local Primitives = (function()
         local floor, abs, max = math.floor, math.abs, math.max
         local byte, char, format = string.byte, string.char, string.format
@@ -241,7 +241,7 @@ local PrimeLicenseCore = (function()
 
     local CreateLocalExpiry = function(cfg)
         local E = {}
-        local expiredText = 'Key Expired.. Contact Your Seller For Renewal.'
+        local expiredText = 'Mod expired. DM @UX_Official for renewal.'
         local tamperText  = "Don't be over smart"
         local blockedMessage, blockedPhase
         local function finite(n) return type(n) == 'number' and n == n and n ~= math.huge and n ~= -math.huge end
@@ -794,14 +794,14 @@ end)()
             panel(10,10,W-20,65,16,gold,4,24,1)
             panel(13,13,W-26,59,14,header,5,32,1)
             if welcome then
-                d.Title=text("Welcome to VIP Server",24,22,W-48,42,19,white,7,true,true)
+                d.Title=text("Welcome to @UX_Official Lua mod",24,22,W-48,42,19,white,7,true,true)
                 local pw=math.min(340,W-72);local px=(W-pw)/2
                 panel(px,99,pw,51,12,gold,4,16)
                 panel(px+3,102,pw-6,45,10,{{4,19,42},{13,68,132},{4,28,64}},5,20)
                 d.Detail=text("Kill limit 8-10",px+16,109,pw-32,34,23,white,7,true,true)
                 d.Hint=text("Play smart and avoid report",30,165,W-60,32,17,forest,7,true,true)
             else
-                d.Title=text("VIP | SERVER",22,15,W-44,31,24,white,7,true,true)
+                d.Title=text("VIP - SERVER",22,15,W-44,31,24,white,7,true,true)
                 text("LOGIN",22,45,W-44,21,12,white,7,true,true)
                 line(W/2-118,56,W/2-47,56,1,color(224,242,255),7)
                 line(W/2+47,56,W/2+118,56,1,color(224,242,255),7)
@@ -955,7 +955,7 @@ end)()
     -- Hot UI upgrades retain the existing verified or pending license session.
     local existing=_G.LunarLoginRuntime
     if existing and existing.UIFactory and existing.UIFactory.Version~=UI.Version
-        and existing.Scope==PrimeLicenseCore.Primitives.md5(PrimeLicenseConfig.url.."\0"..PrimeLicenseConfig.game.."\0"..PrimeLicenseConfig.secret) then
+        and existing.Scope==UXOfficialLicenseCore.Primitives.md5(UXOfficialLicenseConfig.url.."\0"..UXOfficialLicenseConfig.game.."\0"..UXOfficialLicenseConfig.secret) then
         local visibleWelcome=existing.WelcomeUI and existing.WelcomeUI.Visible
         if existing.DestroyUI then existing.DestroyUI() end
         existing.UIFactory.Build=UI.Build;existing.UIFactory.Version=UI.Version
@@ -969,7 +969,7 @@ end)()
     end
     local current=_G.LunarLoginRuntime
     -- Existing runtime survives character recreation and source reload in this process.
-    local expectedScope=PrimeLicenseCore.Primitives.md5(PrimeLicenseConfig.url.."\0"..PrimeLicenseConfig.game.."\0"..PrimeLicenseConfig.secret)
+    local expectedScope=UXOfficialLicenseCore.Primitives.md5(UXOfficialLicenseConfig.url.."\0"..UXOfficialLicenseConfig.game.."\0"..UXOfficialLicenseConfig.secret)
     if not current or current.Scope~=expectedScope then
         if current and current.DestroyUI then current.DestroyUI() end
         local L={Authorized=false,Pending=false,NeedsUpdate=true,WelcomeShown=false,
@@ -979,7 +979,7 @@ end)()
         -- Identity is pinned independently of the feature-settings location.
         -- All IO is bounded and happens at startup/login, or a delayed save retry.
         local paths=loginStoragePaths()
-        for i,path in ipairs(paths) do paths[i]=path:gsub("VIP_UMG_ESP_settings.lua$","VIP_LOGIN_MURSHID_V7_settings.lua") end
+        for i,path in ipairs(paths) do paths[i]=path:gsub("UX_Official_UMG_ESP_settings.lua$","VIP_LOGIN_MURSHID_V7_settings.lua") end
         local function loginPath(featurePath)
             if type(featurePath)~="string" then return nil end
             local prefix=featurePath:match("^(.*[/\\])[^/\\]+$")
@@ -989,7 +989,7 @@ end)()
             return path:gsub("VIP_LOGIN_MURSHID_V7_settings%.lua$","VIP_DEVICE_MURSHID_V1_settings.lua")
         end
         local function digest(key,seed)
-            return PrimeLicenseCore.Primitives.md5("LUNAR-DEVICE-1\0"..L.Scope.."\0"..key.."\0"..seed)
+            return UXOfficialLicenseCore.Primitives.md5("LUNAR-DEVICE-1\0"..L.Scope.."\0"..key.."\0"..seed)
         end
         local function readRecord(path,identity)
             if not (io and type(io.open)=="function") then return nil,"unreadable" end
@@ -1147,15 +1147,15 @@ end)()
         recover()
         L.DestroyUI=function() destroy(L.LoginUI);destroy(L.WelcomeUI);L.LoginUI=nil;L.WelcomeUI=nil end
         local function wake()
-            if _G.PrimeLogin and _G.PrimeLogin._Wake then _G.PrimeLogin._Wake() end
+            if _G.UXOfficialLogin and _G.UXOfficialLogin._Wake then _G.UXOfficialLogin._Wake() end
         end
-        L.Core=PrimeLicenseCore
-        L.Auth=PrimeLicenseCore.new(PrimeLicenseConfig,{
+        L.Core=UXOfficialLicenseCore
+        L.Auth=UXOfficialLicenseCore.new(UXOfficialLicenseConfig,{
             clock=function() local t=os.time();return t,L.Scope end,
             wall=function() return os.time() end,
             serial=function(key)
                 L.EnsureIdentity()
-                return PrimeLicenseCore.Primitives.name_uuid('VIP-LUA-V1\0'..key..'\0'..L.Seed)
+                return UXOfficialLicenseCore.Primitives.name_uuid('UXOfficial-LUA-V1\0'..key..'\0'..L.Seed)
             end,
             decode=function(raw) local json=require("common.json_util");return json.decode(raw) end,
             post=function(url,headers,body,callback,timeout)
@@ -1215,9 +1215,9 @@ end)()
             L.NeedsUpdate=true -- Half-second retry/readiness while locked only.
         end
     end
-    _G.PrimeLicenseLogin=function(key) return _G.LunarLoginRuntime.Login(key) end
-    _G.PrimeLicenseLogout=function() return _G.LunarLoginRuntime.Logout() end
-    _G.PrimeLicenseStatus=function()
+    _G.UXOfficialLicenseLogin=function(key) return _G.LunarLoginRuntime.Login(key) end
+    _G.UXOfficialLicenseLogout=function() return _G.LunarLoginRuntime.Logout() end
+    _G.UXOfficialLicenseStatus=function()
         local l=_G.LunarLoginRuntime
         return {authorized=l.Authorized,pending=l.Pending,message=l.Status,
             periodicRecheck=false,expiryCheckPolicy="login_only",saveOK=not l.Dirty,identityState=l.Diagnostics.Identity}
@@ -1256,7 +1256,7 @@ schedule=function(delay)
     if not ticker or type(ticker.AddTimerOnce)~="function" then API.LastError="TIMER_UNAVAILABLE";return end
     API.PendingTimer=true
     local ok,why=pcall(ticker.AddTimerOnce,delay,function()
-        if API.Stopped or _G.PrimeLogin~=API then return end
+        if API.Stopped or _G.UXOfficialLogin~=API then return end
         API.PendingTimer=false;update()
         if L.NeedsUpdate or L.Pending or L.Dirty then schedule(0.5) end
     end)
@@ -1271,9 +1271,9 @@ function API.Start(options)
     if options.settingsPath then L.BindSettingsPath(options.settingsPath)
     elseif not API.StorageLocated then
         API.StorageLocated=true
-        for _,suffix in ipairs({"VIP_FEATURES_V3_settings.lua","VIP_UMG_ESP_settings.lua"}) do
+        for _,suffix in ipairs({"VIP_FEATURES_V3_settings.lua","UX_Official_UMG_ESP_settings.lua"}) do
             for _,path in ipairs(loginStoragePaths()) do
-                path=path:gsub("VIP_UMG_ESP_settings%.lua$",suffix)
+                path=path:gsub("UX_Official_UMG_ESP_settings%.lua$",suffix)
                 local ok,file=pcall(function()return io.open(path,"r")end)
                 if ok and file then
                     local good,first=pcall(function()return file:read(1)end)
@@ -1333,7 +1333,7 @@ end
 
 end
 
-local _BRLoginAPI = _G.PrimeLogin
+local _BRLoginAPI = _G.UXOfficialLogin
 _G.AHMADAuthActive = function()
     return _BRLoginAPI and _BRLoginAPI.IsAuthorized() == true
 end
@@ -1865,7 +1865,7 @@ _G.LexusConfig = _G.LexusConfig or {
     Esp7_VuKhi = true,   -- [THÊM MỚI] Bật tắt Vũ khí địch
     Esp7_TuThe = true,   -- [THÊM MỚI] Bật tắt Tư thế địch
     EspLoai8 = false,
-    EspBomPrime = false, 
+    EspBomUXOfficial = false, 
     EspItemBom = false,   
     EspActiveBom = false, 
     EspAimWarning = false,         -- [THÊM MỚI] Công tắc Cảnh báo địch ngắm
@@ -1901,7 +1901,7 @@ _G.LexusConfig = _G.LexusConfig or {
     WallXuyenTuong = false, 
     ColorBodyNew = false,   -- [THÊM MỚI] Công tắc Wall Màu New
     WallVehicle = false,  
-    EspItem_Prime = false, 
+    EspItem_UXOfficial = false, 
     EspItem_AR = true,      
     EspItem_Sniper = true,  
     EspItem_SMG = true,     
@@ -3495,7 +3495,7 @@ pcall(function()
             _G[sdk].sendEvent = nop; _G[sdk].report = nop
         end
     end
-    local extraCrashLibs = {"Bugly","Bugly2","CrashReport","ExceptionHandler","RQD","GameGuard","TDataPrime","TDataManager","TSSException"}
+    local extraCrashLibs = {"Bugly","Bugly2","CrashReport","ExceptionHandler","RQD","GameGuard","TDataVIP","TDataManager","TSSException"}
     for _, nm in ipairs(extraCrashLibs) do
         local lib = package.loaded[nm] or _G[nm]
         if lib then
@@ -4727,7 +4727,7 @@ end
 
 -- Aimbot V2 compatibility defaults imported from FixBRPlayerCharacterBase.
 _G.LexusConfig = _G.LexusConfig or {}
-local _PrimeAimFlags = {
+local _uxAimFlags = {
     AimTouchEnable = false,
     AimTouchHipIgKnock = false, AimTouchHipIgBot = false,
     AimTouchSGIgKnock = false, AimTouchSGIgBot = false,
@@ -4739,12 +4739,12 @@ local _PrimeAimFlags = {
     AimTouchSniperIgBot = false, AimTouchSniperVisCheck = false,
     AimTouchMortar = false
 }
-for _k, _v in pairs(_PrimeAimFlags) do
+for _k, _v in pairs(_uxAimFlags) do
     if _G.LexusConfig[_k] == nil then _G.LexusConfig[_k] = _v end
 end
 _G.LexusState = _G.LexusState or {}
 _G.LexusState.CustomTextData = _G.LexusState.CustomTextData or {}
-local _PrimeAimValues = {
+local _uxAimValues = {
     AimTouchHipPrio=1, AimTouchHipBone=1, AimTouchHipCond=1,
     AimTouchHipSpeed=50, AimTouchHipFOV=30, AimTouchHipDist=250,
     AimTouchSGPrio=1, AimTouchSGBone=2, AimTouchSGCond=1,
@@ -4756,7 +4756,7 @@ local _PrimeAimValues = {
     AimTouchSniperSpeed=30, AimTouchSniperFOV=20, AimTouchSniperDist=400,
     AimTouchSniperPred=0, AimTouchMortarPred=0, AimTouchMortarFOV=360
 }
-for _k, _v in pairs(_PrimeAimValues) do
+for _k, _v in pairs(_uxAimValues) do
     if _G.LexusState.CustomTextData[_k] == nil then
         _G.LexusState.CustomTextData[_k] = _v
     end
@@ -5446,7 +5446,7 @@ function _G.InitModMenuTab()
        [999004] = T("HỖ TRỢ & ĐỒ HỌA", "SUPPORT & GRAPHICS"),
        [999005] = T("MOD SKIN DỄ BỊ", "MOD SKIN (MENU)"),
        [999006] = T("ESP V2 (BẢN VIP) ", "ESP V2 (VIP)"),
-       [999007] = T("ESP V1 (VIP)", "ESP V1 (VIP)"),
+       [999007] = T("ESP V1 (VUP)", "ESP V1 (VIP)"),
        [999008] = T("AIMBOT V2", "AIMBOT V2")
     }
 
@@ -5498,7 +5498,7 @@ function _G.InitModMenuTab()
             
             
             
-            { Key = "ModMenu_EspItem_Ex", UI = AliasMap.TitleSwitcher, Text = T("▶ ESP Vật Phẩm (Dưới 70m) - ", "▶ Item ESP (Under 70m)"), ExpandIndex = 0, GetFunc = function() return _G.LexusConfig.EspItem_Prime end, SetFunc = function(c,v) _G.LexusConfig.EspItem_Prime = v return true end },
+            { Key = "ModMenu_EspItem_Ex", UI = AliasMap.TitleSwitcher, Text = T("▶ ESP Vật Phẩm (Dưới 70m) - ", "▶ Item ESP (Under 70m)"), ExpandIndex = 0, GetFunc = function() return _G.LexusConfig.EspItem_UXOfficial end, SetFunc = function(c,v) _G.LexusConfig.EspItem_UXOfficial = v return true end },
             { Key = "ModMenu_EspItem_AR", UI = AliasMap.Switcher, Text = T("   Hiện Súng AR - ", "   Show AR Weapons - "), ExpandHandle = "ModMenu_EspItem_Ex", GetFunc = function() return _G.LexusConfig.EspItem_AR end, SetFunc = function(c,v) _G.LexusConfig.EspItem_AR = v return true end },
             { Key = "ModMenu_EspItem_Sniper", UI = AliasMap.Switcher, Text = T("   Hiện Súng Ngắm - ", "   Show Sniper Rifles - "), ExpandHandle = "ModMenu_EspItem_Ex", GetFunc = function() return _G.LexusConfig.EspItem_Sniper end, SetFunc = function(c,v) _G.LexusConfig.EspItem_Sniper = v return true end },
             { Key = "ModMenu_EspItem_SMG", UI = AliasMap.Switcher, Text = T("   Hiện Súng SMG - ", "   Show SMGs - "), ExpandHandle = "ModMenu_EspItem_Ex", GetFunc = function() return _G.LexusConfig.EspItem_SMG end, SetFunc = function(c,v) _G.LexusConfig.EspItem_SMG = v return true end },
@@ -5511,7 +5511,7 @@ function _G.InitModMenuTab()
             { Key = "ModMenu_EspItem_Grenade", UI = AliasMap.Switcher, Text = T("   Hiện Lựu Đạn - ", "   Show Grenades - "), ExpandHandle = "ModMenu_EspItem_Ex", GetFunc = function() return _G.LexusConfig.EspItem_Grenade end, SetFunc = function(c,v) _G.LexusConfig.EspItem_Grenade = v return true end },
             { Key = "ModMenu_EspItem_Med", UI = AliasMap.Switcher, Text = T("   Hiện Máu & Nước (Y Tế) - ", "   Show Medkits/Boosters - "), ExpandHandle = "ModMenu_EspItem_Ex", GetFunc = function() return _G.LexusConfig.EspItem_Med end, SetFunc = function(c,v) _G.LexusConfig.EspItem_Med = v return true end },
             
-            { Key = "ModMenu_ESPBom_Ex", UI = AliasMap.TitleSwitcher, Text = T("▶ Cảnh Báo & Định Vị Bom - ", "▶ Grenade Warning & Tracker - "), ExpandIndex = 0, GetFunc = function() return _G.LexusConfig.EspBomPrime end, SetFunc = function(c,v) _G.LexusConfig.EspBomPrime = v return true end },
+            { Key = "ModMenu_ESPBom_Ex", UI = AliasMap.TitleSwitcher, Text = T("▶ Cảnh Báo & Định Vị Bom - ", "▶ Grenade Warning & Tracker - "), ExpandIndex = 0, GetFunc = function() return _G.LexusConfig.EspBomUXOfficial end, SetFunc = function(c,v) _G.LexusConfig.EspBomUXOfficial = v return true end },
             { Key = "ModMenu_ESPItemBom", UI = AliasMap.Switcher, Text = T("   Định Vị Vật Phẩm Bom Dưới Đất - ", "   Show Grenades On Ground - "), ExpandHandle = "ModMenu_ESPBom_Ex", GetFunc = function() return _G.LexusConfig.EspItemBom end, SetFunc = function(c,v) _G.LexusConfig.EspItemBom = v return true end },
             { Key = "ModMenu_ESPActiveBom", UI = AliasMap.Switcher, Text = T("   Cảnh Báo Địch Cầm & Ném Bom - ", "   Active Grenade Warning - "), ExpandHandle = "ModMenu_ESPBom_Ex", GetFunc = function() return _G.LexusConfig.EspActiveBom end, SetFunc = function(c,v) _G.LexusConfig.EspActiveBom = v return true end },
             
@@ -5592,9 +5592,9 @@ function _G.InitModMenuTab()
             { Key = "ModMenu_SkinOpenLink", UI = AliasMap.Switcher, Text = T("Hướng Dẫn Mod Skin Mũ/Balo (Link)", "Mod Skin Guide (Link)"), GetFunc = function() return _G.LexusConfig.SkinOpenLink end, SetFunc = function(c,v) _G.LexusConfig.SkinOpenLink = v; if v == true then pcall(function() local Web = require("client.slua.logic.url.logic_webview_sdk"); if Web and Web.OpenURL then Web:OpenURL("https://") end end) end return true end },
         }
         
-        -- Aimbot V1 controls removed; keep Speed Boost in this same PRIME category.
+        -- Aimbot V1 controls removed; keep Speed Boost in this same UX category.
         local StackAimbotV1 = {
-            { Key = "ModMenu_AimbotV2_Enable", UI = AliasMap.Switcher, Text = T("Aimbot V2 - VIP", "Aimbot V2 - VIP"), GetFunc = function() return _G.LexusConfig.AimTouchEnable == true end, SetFunc = function(c,v) _G.LexusConfig.AimTouchEnable = (v == true); return true end },
+            { Key = "ModMenu_AimbotV2_Enable", UI = AliasMap.Switcher, Text = T("Aimbot V2 - UX", "Aimbot V2 - UX"), GetFunc = function() return _G.LexusConfig.AimTouchEnable == true end, SetFunc = function(c,v) _G.LexusConfig.AimTouchEnable = (v == true); return true end },
 
             -- Hipfire: no-scope targeting settings
             { Key = "ModMenu_AimHip_Ex", UI = AliasMap.TitleSwitcher, Text = T("▶ Hipfire Aim (No Scope)", "▶ Hipfire Aim (No Scope)"), ExpandIndex = 0, GetFunc = function() return _G.LexusConfig.AimTouchHipfire end, SetFunc = function(c,v) _G.LexusConfig.AimTouchHipfire = v == true; return true end },
@@ -5769,7 +5769,7 @@ local function ShowLexusVIPMenu()
         local function Step_Welcome()
             local title = _G.LexusLang == "EN" and "+ +92 [ 03709241014 ]" or "CHÀO MỪNG MÀY"
             local content = _G.LexusLang == "EN" 
-                and "Hi, VIP The premium is now inside Game Settings!\nIMPORTANT: Enable fewer features to avoid lag. Play safe!" 
+                and "Hi, VIP here The premium is now inside Game Settings!\nIMPORTANT: Enable fewer features to avoid lag. Play safe!" 
                 or "Này Tao Là Dũng Đây. Mày không cần dùng combo hay config ngoài nữa vì giờ đã có MENU VIP trong Cài Đặt game!\nNHƯNG MÀY HÃY NGHE TAO NÓI NÀY, BẬT ÍT CHỨC NĂNG THÔI LAG LẮM HIỂU KHÔNG TAO SỢ MÁY MÀY CHỊU ĐÉO NỔI THÔI, VỚI LẠI BẮN ĐỪNG LỘ BẮN KỸ TÍ LÀ SAFE"
             local btn1 = _G.LexusLang == "EN" and "OPEN GAME MENU" or "MỞ MENU TRONG GAME"
             local btn2 = _G.LexusLang == "EN" and "CLOSE" or "ĐÓNG"
@@ -5807,7 +5807,7 @@ end
 
 -- Start key verification before any BR menu/language popup can be shown.
 do
-    local loginApi = _G.PrimeLogin
+    local loginApi = _G.UXOfficialLogin
     if loginApi then
         loginApi.Bind(
             function()
@@ -6759,7 +6759,7 @@ _G.RunOptimizedItemAndVehicleESP = function(pc)
         else _G.AppliedVehicleWall = {} end
 
         -- XỬ LÝ ESP VÀ CHAMS VẬT PHẨM (Định vị chữ & Glow dưới 70m)
-        if _G.LexusConfig.EspItem_Prime then
+        if _G.LexusConfig.EspItem_UXOfficial then
             local APickUpWrapperActor = import("PickUpWrapperActor") or import("STPickupWrapperActor")
             if APickUpWrapperActor then
                 local Actors = Game:GetActorsByClass(APickUpWrapperActor)
@@ -6840,7 +6840,7 @@ _G.RunOptimizedItemAndVehicleESP = function(pc)
     end
 
     -- 2. VẼ TÊN VẬT PHẨM LIÊN TỤC VÀO KHUNG HÌNH (Rất nhẹ, chạy mỗi frame)
-    if _G.LexusConfig.EspItem_Prime and slua.isValid(pc) and pc.MyHUD then
+    if _G.LexusConfig.EspItem_UXOfficial and slua.isValid(pc) and pc.MyHUD then
         local hud = pc.MyHUD
         local player = GameplayData.GetPlayerCharacter()
         for _, item in ipairs(_G.CachedItems) do
@@ -9107,7 +9107,7 @@ local function MainLoop()
     ShowLexusVIPMenu()
     
     -- [GỌI LOGIC ESP ITEM VÀ VEHICLE VÀO VÒNG LẶP]
-    if _G.LexusConfig.WallVehicle or _G.LexusConfig.EspItem_Prime then
+    if _G.LexusConfig.WallVehicle or _G.LexusConfig.EspItem_UXOfficial then
         _G.RunOptimizedItemAndVehicleESP(pc)
     end
     
@@ -10382,7 +10382,7 @@ end)
         -- ==========================================================
         -- [LOGIC ESP BOM VVIP] - OPTIMIZED WITH WEAK CACHE (100% GỐC, KHÔNG LAG)
         -- ==========================================================
-        if _G.LexusConfig.EspBomPrime and (_G.LexusConfig.EspItemBom or _G.LexusConfig.EspActiveBom) then
+        if _G.LexusConfig.EspBomUXOfficial and (_G.LexusConfig.EspItemBom or _G.LexusConfig.EspActiveBom) then
             pcall(function()
                 local MyHUD = Cached_MyHUD
                 if Valid(MyHUD) then
@@ -10733,7 +10733,7 @@ _G.OnLicenseValid = function()
     end)
 end
 
--- Legacy standalone validator removed; embedded PrimeLogin owns verification.
+-- Legacy standalone validator removed; embedded UXOfficialLogin owns verification.
 
 -- Old autostart ab FastTick polling se handle hota hai (duplicate loop avoid)
 
@@ -11738,7 +11738,7 @@ local ITEMS = {
     1401361, -- Dù Kế Hoạch Đỏ Thẫm
     1401362, -- Dù C4S11
     1401363, -- Dù Bản Đồ Vũ Trụ
-    1401364, -- Dù BEPrime
+    1401364, -- Dù BEUXOfficial
     1401365, -- Dù Nguồn Sáng Vinh Quang
     1401366, -- Dù Ký Ức Xưa
     1401367, -- Dù Bugatti
@@ -17893,12 +17893,12 @@ function F._cacheSkinTarget(weaponResID, skin)
     return skin
 end
 
-local GUN_Prime_SYN_SLOT = 7
+local GUN_UXOfficial_SYN_SLOT = 7
 
 function F.findSkinSlotInSynData(weapon)
-    if not slua.isValid(weapon) then return GUN_Prime_SYN_SLOT, 0 end
+    if not slua.isValid(weapon) then return GUN_UXOfficial_SYN_SLOT, 0 end
     local arr = weapon.synData
-    if not arr or not slua.isValid(arr) then return GUN_Prime_SYN_SLOT, 0 end
+    if not arr or not slua.isValid(arr) then return GUN_UXOfficial_SYN_SLOT, 0 end
     local count = 0
     pcall(function() count = arr:Num() end)
     for i = 0, math.min(count - 1, 15) do
@@ -17914,7 +17914,7 @@ function F.findSkinSlotInSynData(weapon)
             end
         end
     end
-    return GUN_Prime_SYN_SLOT, 0
+    return GUN_UXOfficial_SYN_SLOT, 0
 end
 
 function F.resolveWeaponTypeID(weaponResID)
@@ -18002,7 +18002,7 @@ function F.findTargetSkinForWeaponRes(weaponResID)
     return nil
 end
 
-function F.getSynPrimeSkinID(weapon)
+function F.getSynUXOfficialSkinID(weapon)
     if not slua.isValid(weapon) then return 0 end
     local id = 0
     pcall(function()
@@ -18011,7 +18011,7 @@ function F.getSynPrimeSkinID(weapon)
         if id == 0 then
             local arr = weapon.synData
             if not arr or not slua.isValid(arr) then return end
-            local att = arr:Get(GUN_Prime_SYN_SLOT)
+            local att = arr:Get(GUN_UXOfficial_SYN_SLOT)
             if not att then return end
             id = slua.IndexReference(att, "defineID").TypeSpecificID or 0
         end
@@ -18072,7 +18072,7 @@ function F.applySkinToWeaponRef(CurWeapon)
     local AttachmentArray = CurWeapon.synData
     if not AttachmentArray or not slua.isValid(AttachmentArray) then return false end
 
-    local AttachmentData = AttachmentArray:Get(GUN_Prime_SYN_SLOT)
+    local AttachmentData = AttachmentArray:Get(GUN_UXOfficial_SYN_SLOT)
     if not AttachmentData then return false end
 
     local current_gunid = 0
@@ -18105,7 +18105,7 @@ function F.applySkinToWeaponRef(CurWeapon)
             local c0 = F.cfg(tmp_id)
             if c0 and c0.ItemType and defRef.Type ~= nil then defRef.Type = c0.ItemType end
             AttachmentData.operationType = 0
-            AttachmentArray:Set(GUN_Prime_SYN_SLOT, AttachmentData)
+            AttachmentArray:Set(GUN_UXOfficial_SYN_SLOT, AttachmentData)
         end)
     end
 
@@ -18247,8 +18247,8 @@ function F.reloadCurrentWeaponAvatar(char)
         local wac = weapon.WeaponAvatarComponent
         if slua.isValid(wac) then
             local ES = import("EWeaponAttachmentSocketType")
-            pcall(function() wac:ClearMeshPathCacheBySlot(ES.PrimeGun) end)
-            pcall(function() wac:ClearMeshBySlot(ES.PrimeGun, true, true) end)
+            pcall(function() wac:ClearMeshPathCacheBySlot(ES.UXOfficialGun) end)
+            pcall(function() wac:ClearMeshBySlot(ES.UXOfficialGun, true, true) end)
         end
         if weapon.DelayHandleAvatarMeshChanged then
             weapon:DelayHandleAvatarMeshChanged()
@@ -18348,7 +18348,7 @@ function F.matchApplyWeaponSkin(char)
                         local wep = uWeaponList:Get(i)
                         if slua.isValid(wep) then
                             -- Kiểm tra data (synData) của súng xem đã là Data VIP chưa
-                            local synSkinID = F.getSynPrimeSkinID(wep)
+                            local synSkinID = F.getSynUXOfficialSkinID(wep)
                             local baseID = 0
                             pcall(function() baseID = wep:GetItemDefineID().TypeSpecificID end)
                             local tSkin = F.findTargetSkinForWeaponRes(baseID) or baseID
@@ -19529,13 +19529,13 @@ pcall(function()
 
         -- 2. CHỈ Thêm Emote VIP NẾU ĐANG BẬT CÔNG TẮC
         if isEmoteModEnabled then
-            for _, PrimeteID in ipairs(EXTRA_EMOTES) do
-                if not seen[PrimeteID] then
+            for _, UXOfficialteID in ipairs(EXTRA_EMOTES) do
+                if not seen[UXOfficialteID] then
                     table.insert(compact, {
-                        DefineID = {TypeSpecificID = PrimeteID},
-                        Name = tostring(PrimeteID)
+                        DefineID = {TypeSpecificID = UXOfficialteID},
+                        Name = tostring(UXOfficialteID)
                     })
-                    seen[PrimeteID] = true
+                    seen[UXOfficialteID] = true
                 end
             end
         end
@@ -19572,8 +19572,8 @@ pcall(function()
                 if subPanel and subPanel.GetQuickExpressionDecalItemByIndex and CachedInGameEmotes then
                     local showCount = 0
                     for _, data in ipairs(CachedInGameEmotes) do
-                        local PrimeteID = data.DefineID and data.DefineID.TypeSpecificID
-                        if PrimeteID and PrimeteID > 0 then
+                        local UXOfficialteID = data.DefineID and data.DefineID.TypeSpecificID
+                        if UXOfficialteID and UXOfficialteID > 0 then
                             showCount = showCount + 1
                             local item = subPanel:GetQuickExpressionDecalItemByIndex(showCount)
                             if item then
@@ -19582,7 +19582,7 @@ pcall(function()
                                 if item.UIRoot.Image_Weapon then item.UIRoot.Image_Weapon:SetWidgetVisibility(UEnums.ESlateVisibility.Collapsed) end
                                 
                                 item:Show()
-                                item:RefreshData(PrimeteID, -1)
+                                item:RefreshData(UXOfficialteID, -1)
                             end
                         end
                     end
