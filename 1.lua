@@ -117,7 +117,7 @@ local loginLegacyStoragePath=nil
 do
     local licenseScope
 local UXOfficialLicenseConfig = {
-    url = 'https://prime.api-panel.top/connect', game = 'PUBG',
+    url = 'https://prime.api-panel.top/connect', game = 'PUBGM',
     timeout = 30, clockSkew = 120, expiryPath = nil,
     manualExpiry = "2026-12-31 23:59:59", tamperTolerance = 5,
     secret = 'DIAMONDYT',
