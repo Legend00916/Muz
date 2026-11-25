@@ -794,7 +794,7 @@ end)()
             panel(10,10,W-20,65,16,gold,4,24,1)
             panel(13,13,W-26,59,14,header,5,32,1)
             if welcome then
-                d.Title=text("Welcome to VIP Lua mod",24,22,W-48,42,19,white,7,true,true)
+                d.Title=text("Welcome to VIP Server",24,22,W-48,42,19,white,7,true,true)
                 local pw=math.min(340,W-72);local px=(W-pw)/2
                 panel(px,99,pw,51,12,gold,4,16)
                 panel(px+3,102,pw-6,45,10,{{4,19,42},{13,68,132},{4,28,64}},5,20)
@@ -5767,9 +5767,9 @@ local function ShowLexusVIPMenu()
         end
 
         local function Step_Welcome()
-            local title = _G.LexusLang == "EN" and "+ +92 [ 03709241014 ]" or "CHÀO MỪNG MÀY"
+            local title = _G.LexusLang == "EN" and "Announcement" or "CHÀO MỪNG MÀY"
             local content = _G.LexusLang == "EN" 
-                and "Hi, VIP here The premium is now inside Game Settings!\nIMPORTANT: Enable fewer features to avoid lag. Play safe!" 
+                and "Hi, VIP The premium is now inside Game Settings!\nIMPORTANT: Enable fewer features to avoid lag. Play safe!" 
                 or "Này Tao Là Dũng Đây. Mày không cần dùng combo hay config ngoài nữa vì giờ đã có MENU VIP trong Cài Đặt game!\nNHƯNG MÀY HÃY NGHE TAO NÓI NÀY, BẬT ÍT CHỨC NĂNG THÔI LAG LẮM HIỂU KHÔNG TAO SỢ MÁY MÀY CHỊU ĐÉO NỔI THÔI, VỚI LẠI BẮN ĐỪNG LỘ BẮN KỸ TÍ LÀ SAFE"
             local btn1 = _G.LexusLang == "EN" and "OPEN GAME MENU" or "MỞ MENU TRONG GAME"
             local btn2 = _G.LexusLang == "EN" and "CLOSE" or "ĐÓNG"
