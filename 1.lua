@@ -1,4 +1,3 @@
-
 local BRPlayerCharacterBase = {
   ServerRPC = {},
   ClientRPC = {},
@@ -51,21 +50,80 @@ GamePlayTools = require("GameLua.Mod.BaseMod.Common.GamePlayTools")
 MatchModeIds = require("GameLua.Mod.BaseMod.GamePlay.Config.MatchModeIdsConfig")
 
 
-do
--- AUTH GATE: BRPlayer-compatible online login
--- ============================================================================
--- 1. LICENSE CONFIG + CORE
--- ============================================================================
-local PrimeeLicenseConfig = (function()
-    return {
-        url = 'https://prime.api-panel.top/connect', game = 'PUBGM',
-        timeout = 10, clockSkew = 120, expiryPath = nil,
-        manualExpiry = "2026-12-31 23:59:59", tamperTolerance = 5,
-        secret = 'DIAMONDYT',
-    }
-end)()
+-- Integrated @Muzammil513 Official Login module (embedded in BRPlayerCharacterBase).
+-- The login UI starts before the language-selection dialog.
+_G.LicenseValid = false
+_G.ModsEnabled = false
+_G.LicenseChecking = true
+_G.LicenseBeginPlayScheduled = false
 
-local PrimeeLicenseCore = (function()
+do
+-- Standalone Murshid login/key module for the supplied PUBG/SLua runtime.
+-- require("MurshidLogin") returns its API; Start() opens key UI.
+local existing=_G.UXOfficialLogin
+if existing and existing.Stop then pcall(existing.Stop) end
+if _G.LunarLoginRuntime and _G.LunarLoginRuntime.DestroyUI then pcall(_G.LunarLoginRuntime.DestroyUI) end
+_G.LunarLoginRuntime=nil
+local API={Version="UXOfficialLogin.Murshid.1",Started=false,Stopped=false,PendingTimer=false,Subscribers={},Errors=0}
+_G.UXOfficialLogin=API
+local loginStorageFilename = "VIP_UMG_ESP_settings.lua"
+local function loginStoragePaths()
+    local paths = {
+        "//storage/emulated/0/Android/data/com.tencent.ig/files/UE4Game/ShadowTrackerExtra/ShadowTrackerExtra/Saved/SaveGames/"..loginStorageFilename,
+        "//storage/emulated/0/Android/data/com.vng.pubgmobile/files/UE4Game/ShadowTrackerExtra/ShadowTrackerExtra/Saved/SaveGames/"..loginStorageFilename,
+        "//storage/emulated/0/Android/data/com.pubg.krmobile/files/UE4Game/ShadowTrackerExtra/ShadowTrackerExtra/Saved/SaveGames/"..loginStorageFilename,
+        "//storage/emulated/0/Android/data/com.rekoo.pubgm/files/UE4Game/ShadowTrackerExtra/ShadowTrackerExtra/Saved/SaveGames/"..loginStorageFilename,
+        "//storage/emulated/0/Android/data/com.pubg.imobile/files/UE4Game/ShadowTrackerExtra/ShadowTrackerExtra/Saved/SaveGames/"..loginStorageFilename,
+        "Documents/ShadowTrackerExtra/Saved/SaveGames/"..loginStorageFilename,
+        "ShadowTrackerExtra/Saved/SaveGames/"..loginStorageFilename,
+        loginStorageFilename
+    }
+    local home=nil
+    pcall(function() if os and os.getenv then home=os.getenv("HOME") end end)
+    if type(home)=="string" and home~="" then
+        table.insert(paths,1,home.."/Documents/ShadowTrackerExtra/Saved/SaveGames/"..loginStorageFilename)
+    end
+    return paths
+end
+-- Replace the SaveGames file only after write/flush/close succeed where Lua
+-- exposes rename. A failed temporary write keeps the last saved file intact.
+local function loginWriteSettings(path,payload)
+    local atomic=os and type(os.rename)=="function"
+    local target=atomic and path..".tmp" or path
+    local opened,file=pcall(io.open,target,"w")
+    if not opened or not file then return false,"Open failed: "..target end
+    local closed=false
+    local ok,err=pcall(function()
+        local result,reason=file:write(payload)
+        assert(result,reason or "Settings write failed")
+        if file.flush then local flushed,why=file:flush();assert(flushed,why or "Settings flush failed") end
+        local result,reason=file:close();closed=true
+        assert(result,reason or "Settings close failed")
+    end)
+    if not closed then pcall(function() file:close() end) end
+    if ok and atomic then
+        local called,result,reason=pcall(os.rename,target,path)
+        ok=called and result~=nil and result~=false
+        err=ok and nil or (reason or result or "Settings rename failed")
+    end
+    if not ok and atomic and os.remove then pcall(os.remove,target) end
+    return ok,err,atomic
+end
+
+local loginLegacyStoragePath=nil
+
+
+-- One authorization session per Lua process; gameplay identity never owns it.
+do
+    local licenseScope
+local UXOfficialLicenseConfig = {
+    url = 'https://prime.api-panel.top/connect', game = 'PUBG',
+    timeout = 30, clockSkew = 120, expiryPath = nil,
+    manualExpiry = "2026-12-31 23:59:59", tamperTolerance = 5,
+    secret = 'DIAMONDYT',
+}
+
+local UXOfficialLicenseCore = (function()
     local Primitives = (function()
         local floor, abs, max = math.floor, math.abs, math.max
         local byte, char, format = string.byte, string.char, string.format
@@ -171,406 +229,312 @@ local PrimeeLicenseCore = (function()
                 constant_time_equal = constant_time_equal, name_uuid = name_uuid}
     end)()
 
-    local SESSION_KEY = '__PrimeeLicenseSession_v1'
-    local SAVED_KEY_FILE = 'Primee_license_key.txt'
-
-    local function getSavedKeyPaths()
-        return {
-            '/Documents/PrimeeTrackerExtra/Saved/Paks/' .. SAVED_KEY_FILE,
-            '/Documents/PrimeeTrackerExtra/Saved/Paks/puffer_temp/' .. SAVED_KEY_FILE,
-            'PrimeeTrackerExtra/Saved/Paks/' .. SAVED_KEY_FILE,
-            '../../PrimeeTrackerExtra/Saved/Paks/' .. SAVED_KEY_FILE,
-            '//storage/emulated/0/Android/data/com.tencent.ig/files/UE4Game/PrimeeTrackerExtra/PrimeeTrackerExtra/Saved/Paks/' .. SAVED_KEY_FILE,
-            '//storage/emulated/0/Android/data/com.pubg.imobile/files/UE4Game/PrimeeTrackerExtra/PrimeeTrackerExtra/Saved/Paks/' .. SAVED_KEY_FILE,
-        }
-    end
-
-    local function loadSavedKey()
-        for _, path in ipairs(getSavedKeyPaths()) do
-            local f = io.open(path, 'r')
-            if f then
-                local key = f:read('*a')
-                f:close()
-                if type(key) == 'string' then
-                    key = key:match('^%s*(.-)%s*$')
-                    if #key > 0 and #key <= 512 then return key end
-                end
-            end
-        end
-        return nil
-    end
-
-    local function saveSavedKey(key)
-        if type(key) ~= 'string' then return false end
-        key = key:match('^%s*(.-)%s*$')
-        if #key == 0 or #key > 512 then return false end
-        local wroteAny = false
-        for _, path in ipairs(getSavedKeyPaths()) do
-            local f = io.open(path, 'w')
-            if f then
-                f:write(key)
-                f:close()
-                wroteAny = true
-            end
-        end
-        return wroteAny
-    end
-
-    local function clearSavedKey()
-        for _, path in ipairs(getSavedKeyPaths()) do
-            pcall(function()
-                local f = io.open(path, 'w')
-                if f then f:write(''); f:close() end
-            end)
-        end
-    end
-
+    local SESSION_KEY='__LunarLicenseSessionV7'
     local function loadSession()
-        local g = rawget(_G, SESSION_KEY)
-        if type(g) ~= 'table' or g.authorized ~= true then return nil end
-        if type(g.expiresAt) == 'number' and g.expiresAt <= os.time() then
-            _G[SESSION_KEY] = nil; return nil
-        end
-        return g
+        local t=rawget(_G,SESSION_KEY)
+        if type(t)=='table' and t.authorized==true and t.scope==licenseScope then return t end
     end
     local function saveSession(expiresAt)
-        pcall(function()
-            _G[SESSION_KEY] = {authorized = true, expiresAt = expiresAt, issuedAt = os.time()}
-        end)
+        _G[SESSION_KEY]={authorized=true,expiresAt=expiresAt,scope=licenseScope}
     end
-    local function clearSession() pcall(function() _G[SESSION_KEY] = nil end) end
+    local function clearSession() _G[SESSION_KEY]=nil end
 
-    local CreateLocalExpiry = (function()
-        return function(cfg, wallReader)
-            local E = {}
-            local expiredText = 'Mod Expired Contact Your Seller For Renewal.'
-            local tamperText  = "Don't be over smart"
-            local blockedMessage, blockedPhase
-            local function finite(n)
-                return type(n) == 'number' and n == n and n ~= math.huge and n ~= -math.huge
-            end
-            local function parse(text)
-                if type(text) ~= 'string' then return nil end
-                local y,m,d,h,n,s = text:match('^(%d%d%d%d)%-(%d%d)%-(%d%d) (%d%d):(%d%d):(%d%d)$')
-                y,m,d,h,n,s = tonumber(y),tonumber(m),tonumber(d),tonumber(h),tonumber(n),tonumber(s)
-                if not y or y < 1970 or y > 9999 or m < 1 or m > 12 or h > 23 or n > 59 or s > 59 then return nil end
-                local leap = y % 4 == 0 and (y % 100 ~= 0 or y % 400 == 0)
-                local months = {31, leap and 29 or 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31}
-                if d < 1 or d > months[m] then return nil end
-                local prior = y - 1
-                local days = 365 * (y - 1970) + math.floor(prior / 4) - math.floor(1969 / 4)
-                    - math.floor(prior / 100) + math.floor(1969 / 100)
-                    + math.floor(prior / 400) - math.floor(1969 / 400)
-                for i = 1, m - 1 do days = days + months[i] end
-                return (days + d - 1) * 86400 + h * 3600 + n * 60 + s - 6 * 3600
-            end
-            local configured = type(cfg.manualExpiry) == 'string'
-                and cfg.manualExpiry:match('^%s*(.-)%s*$') or cfg.manualExpiry
-            local expiry = parse(configured)
-            local skew = cfg.clockSkew or 120
-            if configured ~= nil and configured ~= '' and not expiry then
-                blockedMessage, blockedPhase = 'Invalid local expiry date. Use YYYY-MM-DD HH:MM:SS.', 'error'
-            end
-            local function block(message, phase)
-                if not blockedMessage then blockedMessage, blockedPhase = message, phase end
-                return false, blockedMessage, blockedPhase
-            end
-            function E.Status() return not blockedMessage, blockedMessage, blockedPhase end
-            function E.MarkTampered() return block(tamperText, 'tampered') end
-            function E.GetExpiry() return expiry end
-            function E.Accept(server, now, world, phone, rtt)
-                if blockedMessage then return E.Status() end
-                if not finite(server) or not finite(now) or now < 0 or world == nil
-                    or not finite(rtt) or rtt < 0 or not finite(phone) then
-                    return block('Clock verification unavailable.', 'error')
-                end
-                if math.abs(phone - server) > skew + rtt then return E.MarkTampered() end
-                if expiry and server + rtt >= expiry then return block(expiredText, 'expired') end
-                return true
-            end
-            return E
+    local CreateLocalExpiry = function(cfg)
+        local E = {}
+        local expiredText = 'Key Expired.. Contact Your Seller For Renewal.'
+        local tamperText  = "Don't be over smart"
+        local blockedMessage, blockedPhase
+        local function finite(n) return type(n) == 'number' and n == n and n ~= math.huge and n ~= -math.huge end
+        local function parse(text)
+            if type(text) ~= 'string' then return nil end
+            local y,m,d,h,n,s = text:match('^(%d%d%d%d)%-(%d%d)%-(%d%d) (%d%d):(%d%d):(%d%d)$')
+            y,m,d,h,n,s = tonumber(y),tonumber(m),tonumber(d),tonumber(h),tonumber(n),tonumber(s)
+            if not y or not m or not d or not h or not n or not s or y < 1970 or y > 9999 or m < 1 or m > 12 or h > 23 or n > 59 or s > 59 then return nil end
+            local leap = y % 4 == 0 and (y % 100 ~= 0 or y % 400 == 0)
+            local months = {31, leap and 29 or 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31}
+            if d < 1 or d > months[m] then return nil end
+            local prior = y - 1
+            local days = 365 * (y - 1970) + math.floor(prior / 4) - math.floor(1969 / 4)
+                - math.floor(prior / 100) + math.floor(1969 / 100)
+                + math.floor(prior / 400) - math.floor(1969 / 400)
+            for i = 1, m - 1 do days = days + months[i] end
+            return (days + d - 1) * 86400 + h * 3600 + n * 60 + s - 6 * 3600
         end
-    end)()
+        local configured = type(cfg.manualExpiry) == 'string' and cfg.manualExpiry:match('^%s*(.-)%s*$') or cfg.manualExpiry
+        local expiry = parse(configured)
+        local skew = cfg.clockSkew or 120
+        if configured ~= nil and configured ~= '' and not expiry then
+            blockedMessage, blockedPhase = 'Invalid local expiry date. Use YYYY-MM-DD HH:MM:SS.', 'error'
+        end
+        local function block(message, phase)
+            if not blockedMessage then blockedMessage, blockedPhase = message, phase end
+            return false, blockedMessage, blockedPhase
+        end
+        function E.Status() return not blockedMessage, blockedMessage, blockedPhase end
+        function E.MarkTampered() return block(tamperText, 'tampered') end
+        function E.GetExpiry() return expiry end
+        function E.Accept(server, now, world, phone, rtt)
+            if blockedMessage then return E.Status() end
+            if not finite(server) or not finite(now) or now < 0 or world == nil
+                or not finite(rtt) or rtt < 0 or not finite(phone) then
+                return block('Clock verification unavailable.', 'error')
+            end
+            if math.abs(phone - server) > skew + rtt then return E.MarkTampered() end
+            if expiry and server + rtt >= expiry then return block(expiredText, 'expired') end
+            return true
+        end
+        return E
+    end
 
-    local CreateAuth = (function()
-        return function(P, cfg, deps)
-            local A = {}
-            local phase, message = 'locked', 'Enter your key to sign in.'
-            local allowed, pending, generation = false, nil, 0
-            local expiresAt
-            local lastRequestLatencyMs, lastResponseTime, lastResponseWorld
-            local startFn, stopFn, payloadStarted, restartRequired
-            local localExpiry = deps.localExpiry
-            local savedKey = loadSavedKey()
-            do
-                local stored = loadSession()
-                if stored then
-                    allowed = true; expiresAt = stored.expiresAt
-                    phase, message = 'active', 'Session restored'
-                end
+    local CreateAuth = function(P, cfg, deps)
+        local A = {}
+        licenseScope=P.md5(cfg.url.."\0"..cfg.game.."\0"..cfg.secret)
+        local phase, message = 'locked', 'Enter your key to sign in.'
+        local allowed, pending, generation = false, nil, 0
+        local expiresAt
+        local lastRequestLatencyMs, lastResponseTime, lastResponseWorld
+        local startFn, stopFn, payloadStarted, restartRequired
+        local localExpiry = deps.localExpiry
+        do
+            local stored = loadSession()
+            if stored then
+                allowed = true; expiresAt = stored.expiresAt
+                phase, message = 'active', 'Session restored'
             end
+        end
+        if localExpiry then
+            local ok, text, state = localExpiry.Status()
+            if not ok then message, phase = text, state end
+        end
+        local function finite(n) return type(n) == 'number' and n == n and n ~= math.huge and n ~= -math.huge end
+        local function readClock()
+            local ok, n, w = pcall(deps.clock)
+            if ok and finite(n) and n >= 0 and w ~= nil then return n, w end
+        end
+        local function notify(text, state)
+            message, phase = text, state
+            if type(deps.status) == 'function' then pcall(deps.status, text, state) end
+        end
+        local function stopPayload()
+            if payloadStarted then
+                payloadStarted = false
+                local ok, accepted = pcall(stopFn)
+                if not ok or accepted == false then restartRequired = true end
+            end
+        end
+        local function revoke(text, state)
+            generation = generation + 1
+            allowed, pending, expiresAt = false, nil, nil
+            lastRequestLatencyMs, lastResponseTime, lastResponseWorld = nil, nil, nil
+            stopPayload()
+            local localDenied = false
             if localExpiry then
-                local ok, text, state = localExpiry.Status()
-                if not ok then message, phase = text, state end
+                local ok, localText, localPhase = localExpiry.Status()
+                if not ok then text, state, localDenied = localText, localPhase, true end
             end
-            local function finite(n)
-                return type(n) == 'number' and n == n and n ~= math.huge and n ~= -math.huge
-            end
-            local function readClock()
-                local ok, n, w = pcall(deps.clock)
-                if ok and finite(n) and n >= 0 and w ~= nil then return n, w end
-            end
-            local function notify(text, state)
-                message, phase = text, state
-                if type(deps.status) == 'function' then pcall(deps.status, text, state) end
-            end
-            local function stopPayload()
-                if payloadStarted then
-                    payloadStarted = false
-                    local ok, accepted = pcall(stopFn)
-                    if not ok or accepted == false then restartRequired = true end
-                end
-            end
-            local function revoke(text, state)
-                generation = generation + 1
-                allowed, pending, expiresAt = false, nil, nil
-                lastRequestLatencyMs, lastResponseTime, lastResponseWorld = nil, nil, nil
-                stopPayload()
-                local localDenied = false
-                if localExpiry then
-                    local ok, localText, localPhase = localExpiry.Status()
-                    if not ok then text, state, localDenied = localText, localPhase, true end
-                end
-                notify(restartRequired and not localDenied
-                    and 'Restart required: payload cleanup failed.' or text, state or 'error')
-            end
-            local function startPayload()
-                if payloadStarted or not startFn then return true end
-                payloadStarted = true
-                local before = generation
-                local ok, accepted = pcall(startFn)
-                if not ok or accepted == false then
-                    restartRequired = true
-                    revoke('Restart required: offline script startup failed.', 'error')
-                    return false
-                end
-                return generation == before and allowed
-            end
-            local function denyReason(reason)
-                if type(reason) ~= 'string' then return 'Expired' end
-                local lower = reason:sub(1, 120):lower():gsub('[_%s%-]+', ' ')
-                if lower == 'max devices' or lower == 'maximum devices'
-                    or lower == 'max devices reached' then
-                    return 'Max Devices'
-                end
-                local clean = reason
-                for _, field in ipairs({'key', 'serial'}) do
-                    if pending and type(pending[field]) == 'string' and #pending[field] > 0 then
-                        local needle = pending[field]:gsub('([^%w])', '%%%1')
-                        clean = clean:gsub(needle, '[' .. field .. ']')
-                    end
-                end
-                if type(cfg.secret) == 'string' and #cfg.secret > 0 then
-                    clean = clean:gsub(cfg.secret:gsub('([^%w])', '%%%1'), '[credential]')
-                end
-                clean = clean:gsub('[%c]', ' '):sub(1, 120)
-                return clean == '' and 'Expired' or ('Expired: ' .. clean)
-            end
-            local function configuredExpiry(result)
-                if cfg.expiryPath == nil then return nil, true end
-                if type(cfg.expiryPath) ~= 'table' or #cfg.expiryPath == 0 then return nil, false end
-                local v = result
-                for _, name in ipairs(cfg.expiryPath) do
-                    if type(v) ~= 'table' then return nil, false end
-                    v = rawget(v, name)
-                end
-                return v, finite(v) and v > 0 and v % 1 == 0
-            end
-            local function begin(key)
-                if restartRequired or pending then return false end
-                if localExpiry then
-                    local ok, text, state = localExpiry.Status()
-                    if not ok then revoke(text, state); return false end
-                end
-                if type(key) ~= 'string' then key = '' end
-                key = key:match('^%s*(.-)%s*$')
-                if #key == 0 or #key > 512 then
-                    revoke('Expired: enter a valid key.', 'denied'); return false
-                end
-                local now, world = readClock()
-                if not now then
-                    revoke('Game clock unavailable. Try again in a match.', 'error'); return false
-                end
-                local okSerial, serial = pcall(deps.serial, key)
-                if not okSerial or type(serial) ~= 'string' or #serial == 0 or #serial > 512 then
-                    revoke('Device identifier unavailable.', 'error'); return false
-                end
-                generation = generation + 1
-                local requestId = generation
-                pending = {id = requestId, key = key, serial = serial,
-                           started = now, world = world, deadline = now + cfg.timeout}
-                notify('Signing in...', 'pending')
-                if not pending or pending.id ~= requestId or generation ~= requestId then return false end
-                local body = 'game=' .. P.form_encode(cfg.game)
-                    .. '&user_key=' .. P.form_encode(key)
-                    .. '&serial=' .. P.form_encode(serial)
-                local function received(success, raw)
-                    if not pending or pending.id ~= requestId or generation ~= requestId then return end
-                    local current, worldNow = readClock()
-                    if not current or worldNow ~= pending.world or current < pending.started
-                        or current >= pending.deadline then
-                        revoke('Request expired. Please sign in again.', 'error'); return
-                    end
-                    if success ~= true or type(raw) ~= 'string' or #raw == 0 or #raw > 32768 then
-                        revoke('Connection failed. Please try again.', 'error'); return
-                    end
-                    local ok, result = pcall(deps.decode, raw)
-                    if not ok or type(result) ~= 'table' then
-                        revoke('Invalid server response.', 'error'); return
-                    end
-                    if result.status ~= true then revoke(denyReason(result.reason), 'denied'); return end
-                    local data = result.data
-                    if type(data) ~= 'table' or type(data.token) ~= 'string' or #data.token ~= 32
-                        or not data.token:match('^[%x]+$') or not finite(data.rng) or data.rng % 1 ~= 0 then
-                        revoke('Incomplete server response.', 'error'); return
-                    end
-                    local expected = P.md5(cfg.game .. '-' .. key .. '-' .. serial .. '-' .. cfg.secret)
-                    if not P.constant_time_equal(data.token:lower(), expected) then
-                        revoke('Server token verification failed.', 'denied'); return
-                    end
-                    local okWall, wall = pcall(deps.wall)
-                    if not okWall or not finite(wall) then
-                        revoke('Phone clock unavailable.', 'error'); return
-                    end
-                    if localExpiry then
-                        local accepted, text, state = localExpiry.Accept(
-                            data.rng, current, worldNow, wall, current - pending.started)
-                        if not accepted then revoke(text, state); return end
-                    elseif math.abs(wall - data.rng) > cfg.clockSkew then
-                        revoke('Phone/server clock mismatch. Check automatic time.', 'error'); return
-                    end
-                    local expiry, validExpiry = configuredExpiry(result)
-                    if not validExpiry then
-                        revoke('Configured server expiry field is missing or invalid.', 'error'); return
-                    end
-                    if expiry and expiry - data.rng - (current - pending.started) <= 0 then
-                        revoke('Expired', 'denied'); return
-                    end
-                    local fixedExpiry = localExpiry and localExpiry.GetExpiry()
-                    if fixedExpiry then expiry = math.min(expiry or fixedExpiry, fixedExpiry) end
-                    lastRequestLatencyMs = (current - pending.started) * 1000
-                    lastResponseTime, lastResponseWorld = current, worldNow
-                    pending = nil
-                    allowed, expiresAt = true, expiry
-                    saveSession(expiresAt)
-                    -- Remember the successfully authenticated key so the next
-                    -- game launch can restore access without asking again.
-                    pcall(function()
-                        saveSavedKey(key)
-                        savedKey = key
-                        _G.__Primee_SAVED_LICENSE_KEY = key
-                        if type(_G.__PrimeePersistLicenseKey) == "function" then
-                            _G.__PrimeePersistLicenseKey(key)
-                        end
-                        if type(_G.SHMenuSave) == "function" then
-                            _G.SHMenuSave()
-                        end
-                    end)
-                    if not startPayload() then return end
-                    notify('Login successful.', 'active')
-                end
-                local ok, accepted = pcall(deps.post, cfg.url,
-                    {['Content-Type'] = 'application/x-www-form-urlencoded'},
-                    body, received, cfg.timeout)
-                if not ok or accepted == false then
-                    revoke('HTTP request could not start.', 'error'); return false
-                end
-                return true
-            end
-            function A.Login(key) if allowed then return false end; return begin(key) end
-            function A.Tick()
-                if not pending then return end
-                local now, world = readClock()
-                if not now or world ~= pending.world or now < pending.started then
-                    revoke('Login interrupted by map loading. Please try again when ready.', 'locked'); return
-                end
-                if now >= pending.deadline then
-                    revoke('Request timed out. Please try again.', 'error')
-                end
-            end
-            function A.IsAuthorized()
-                if allowed and not restartRequired then return true end
-                local stored = loadSession()
-                if stored and not restartRequired then
-                    allowed = true; expiresAt = stored.expiresAt; return true
-                end
+            notify(restartRequired and not localDenied
+                and 'Restart required: payload cleanup failed.' or text, state or 'error')
+        end
+        local function startPayload()
+            if payloadStarted or not startFn then return true end
+            payloadStarted = true
+            local before = generation
+            local ok, accepted = pcall(startFn)
+            if not ok or accepted == false then
+                restartRequired = true
+                revoke('Restart required: offline script startup failed.', 'error')
                 return false
             end
-            function A.Logout() clearSession(); revoke('Expired: signed out.', 'locked') end
-            function A.FailClosed(text, requiresRestart)
-                if requiresRestart == true then restartRequired = true end
-                revoke(text or 'Online access unavailable.', 'error')
-            end
-            function A.ReportClockTampering()
-                if localExpiry then localExpiry.MarkTampered() end
-                revoke("Don't be over smart", 'tampered')
-            end
-            function A.Bind(onStart, onStop)
-                if type(onStart) ~= 'function' or type(onStop) ~= 'function' then
-                    return false, 'START_AND_STOP_REQUIRED'
-                end
-                if startFn and (startFn ~= onStart or stopFn ~= onStop) then
-                    return false, 'ALREADY_BOUND'
-                end
-                startFn, stopFn = onStart, onStop
-                if A.IsAuthorized() then return startPayload() end
-                return true
-            end
-            function A.Unbind()
-                revoke('Offline script disconnected.', 'locked')
-                startFn, stopFn = nil, nil
-            end
-            function A.GetSavedKey()
-                if type(savedKey) == 'string' and #savedKey > 0 then return savedKey end
-                local g = rawget(_G, '__Primee_SAVED_LICENSE_KEY')
-                if type(g) == 'string' and #g > 0 then return g end
-                return nil
-            end
-            function A.SetSavedKey(key)
-                if type(key) ~= 'string' then return false end
-                key = key:match('^%s*(.-)%s*$')
-                if #key == 0 or #key > 512 then return false end
-                savedKey = key
-                pcall(function()
-                    _G.__Primee_SAVED_LICENSE_KEY = key
-                    saveSavedKey(key)
-                    if type(_G.__PrimeePersistLicenseKey) == "function" then _G.__PrimeePersistLicenseKey(key) end
-                end)
-                return true
-            end
-            function A.GetRemainingSeconds() return nil end
-            function A.GetState()
-                local authorized = A.IsAuthorized()
-                local sample, age
-                if authorized and lastRequestLatencyMs ~= nil then
-                    local now, world = readClock()
-                    if now and world == lastResponseWorld and now >= lastResponseTime then
-                        sample, age = lastRequestLatencyMs, now - lastResponseTime
-                    end
-                end
-                return {
-                    phase = phase, message = message, authorized = authorized,
-                    sessionAuthorized = authorized, expiresAt = expiresAt,
-                    accessPolicy = "game_session", expiryCheckPolicy = "login_only",
-                    periodicRecheck = false, pending = pending ~= nil,
-                    linked = startFn ~= nil, restartRequired = restartRequired == true,
-                    lastRequestLatencyMs = sample, lastRequestLatencyAgeSeconds = age,
-                    latencyScope = "license_http_round_trip"
-                }
-            end
-            return A
+            return generation == before and allowed
         end
-    end)()
+        local function denyReason(reason)
+            if type(reason) ~= 'string' then return 'Expired' end
+            local lower = reason:sub(1, 120):lower():gsub('[_%s%-]+', ' ')
+            if lower == 'max devices' or lower == 'maximum devices'
+                or lower == 'max devices reached' then return 'Max Devices' end
+            local clean = reason
+            for _, field in ipairs({'key', 'serial'}) do
+                if pending and type(pending[field]) == 'string' and #pending[field] > 0 then
+                    local needle = pending[field]:gsub('([^%w])', '%%%1')
+                    clean = clean:gsub(needle, '[' .. field .. ']')
+                end
+            end
+            if type(cfg.secret) == 'string' and #cfg.secret > 0 then
+                clean = clean:gsub(cfg.secret:gsub('([^%w])', '%%%1'), '[credential]')
+            end
+            clean = clean:gsub('[%c]', ' '):sub(1, 120)
+            return clean == '' and 'Expired' or ('Expired: ' .. clean)
+        end
+        local function configuredExpiry(result)
+            if cfg.expiryPath == nil then return nil, true end
+            if type(cfg.expiryPath) ~= 'table' or #cfg.expiryPath == 0 then return nil, false end
+            local v = result
+            for _, name in ipairs(cfg.expiryPath) do
+                if type(v) ~= 'table' then return nil, false end
+                v = rawget(v, name)
+            end
+            return v, finite(v) and v > 0 and v % 1 == 0
+        end
+        local function begin(key)
+            if restartRequired or pending then return false end
+            if localExpiry then
+                local ok, text, state = localExpiry.Status()
+                if not ok then revoke(text, state); return false end
+            end
+            if type(key) ~= 'string' then key = '' end
+            key = key:match('^%s*(.-)%s*$')
+            if #key == 0 or #key > 512 then
+                revoke('Expired: enter a valid key.', 'denied'); return false
+            end
+            local now, world = readClock()
+            if not now then
+                revoke('Phone clock unavailable. Please try again.', 'error'); return false
+            end
+            local okSerial, serial = pcall(deps.serial, key)
+            if not okSerial or type(serial) ~= 'string' or #serial == 0 or #serial > 512 then
+                local failure=tostring(serial)
+                local text='Device identifier unavailable.'
+                if not okSerial and failure:find('DEVICE_CACHE_CONFLICT',1,true) then
+                    text='Saved device records conflict. Restore the registered device backup.'
+                elseif not okSerial and failure:find('DEVICE_CACHE_RECOVERY_REQUIRED',1,true) then
+                    text='Saved device data could not be recovered. Check storage or restore its backup.'
+                elseif not okSerial and failure:find('DEVICE_CACHE_SAVE_FAILED',1,true) then
+                    text='Device cache could not be saved. Check game storage access.'
+                end
+                revoke(text,'error');return false
+            end
+            generation = generation + 1
+            local requestId = generation
+            pending = {id = requestId, key = key, serial = serial,
+                       started = now, world = world, deadline = now + cfg.timeout}
+            notify('Signing in...', 'pending')
+            if not pending or pending.id ~= requestId or generation ~= requestId then return false end
+            local body = 'game=' .. P.form_encode(cfg.game)
+                .. '&user_key=' .. P.form_encode(key)
+                .. '&serial=' .. P.form_encode(serial)
+            local function received(success, raw)
+                if not pending or pending.id ~= requestId or generation ~= requestId then return end
+                local current, worldNow = readClock()
+                if not current or worldNow ~= pending.world or current < pending.started
+                    or current >= pending.deadline then
+                    revoke('Request expired. Please sign in again.', 'error'); return
+                end
+                if success ~= true or type(raw) ~= 'string' or #raw == 0 or #raw > 32768 then
+                    revoke('Connection failed. Please try again.', 'error'); return
+                end
+                local ok, result = pcall(deps.decode, raw)
+                if not ok or type(result) ~= 'table' then
+                    revoke('Invalid server response.', 'error'); return
+                end
+                if result.status ~= true then revoke(denyReason(result.reason), 'denied'); return end
+                local data = result.data
+                if type(data) ~= 'table' or type(data.token) ~= 'string' or #data.token ~= 32
+                    or not data.token:match('^[%x]+$') or not finite(data.rng) or data.rng % 1 ~= 0 then
+                    revoke('Incomplete server response.', 'error'); return
+                end
+                local expected = P.md5(cfg.game .. '-' .. key .. '-' .. serial .. '-' .. cfg.secret)
+                if not P.constant_time_equal(data.token:lower(), expected) then
+                    revoke('Server token verification failed.', 'denied'); return
+                end
+                local okWall, wall = pcall(deps.wall)
+                if not okWall or not finite(wall) then
+                    revoke('Phone clock unavailable.', 'error'); return
+                end
+                if localExpiry then
+                    local accepted, text, state = localExpiry.Accept(
+                        data.rng, current, worldNow, wall, current - pending.started)
+                    if not accepted then revoke(text, state); return end
+                elseif math.abs(wall - data.rng) > cfg.clockSkew then
+                    revoke('Phone/server clock mismatch. Check automatic time.', 'error'); return
+                end
+                local expiry, validExpiry = configuredExpiry(result)
+                if not validExpiry then
+                    revoke('Configured server expiry field is missing or invalid.', 'error'); return
+                end
+                if expiry and expiry - data.rng - (current - pending.started) <= 0 then
+                    revoke('Expired', 'denied'); return
+                end
+                local fixedExpiry = localExpiry and localExpiry.GetExpiry()
+                if fixedExpiry then expiry = math.min(expiry or fixedExpiry, fixedExpiry) end
+                lastRequestLatencyMs = (current - pending.started) * 1000
+                lastResponseTime, lastResponseWorld = current, worldNow
+                pending = nil
+                allowed, expiresAt = true, expiry
+                saveSession(expiresAt)
+                if not startPayload() then return end
+                notify('Login successful.', 'active')
+            end
+            local ok, accepted = pcall(deps.post, cfg.url,
+                {['Content-Type'] = 'application/x-www-form-urlencoded'},
+                body, received, cfg.timeout)
+            if not ok or accepted == false then
+                revoke('HTTP request could not start.', 'error'); return false
+            end
+            return true
+        end
+        function A.Login(key) if allowed then return false end; return begin(key) end
+        function A.Tick()
+            if not pending then return end
+            local now, world = readClock()
+            if not now or world ~= pending.world or now < pending.started then
+                revoke('Login clock unavailable. Please try again.', 'locked'); return
+            end
+            if now >= pending.deadline then
+                revoke('Request timed out. Please try again.', 'error')
+            end
+        end
+        function A.IsAuthorized()
+            if allowed and not restartRequired then return true end
+            local stored = loadSession()
+            if stored and not restartRequired then
+                allowed = true; expiresAt = stored.expiresAt; return true
+            end
+            return false
+        end
+        function A.Logout() clearSession(); revoke('Expired: signed out.', 'locked') end
+        function A.FailClosed(text, requiresRestart)
+            if requiresRestart == true then restartRequired = true end
+            revoke(text or 'Online access unavailable.', 'error')
+        end
+        function A.ReportClockTampering()
+            if localExpiry then localExpiry.MarkTampered() end
+            revoke("Don't be over smart", 'tampered')
+        end
+        function A.Bind(onStart, onStop)
+            if type(onStart) ~= 'function' or type(onStop) ~= 'function' then
+                return false, 'START_AND_STOP_REQUIRED'
+            end
+            if startFn and (startFn ~= onStart or stopFn ~= onStop) then return false, 'ALREADY_BOUND' end
+            startFn, stopFn = onStart, onStop
+            if A.IsAuthorized() then return startPayload() end
+            return true
+        end
+        function A.Unbind()
+            revoke('Offline script disconnected.', 'locked')
+            startFn, stopFn = nil, nil
+        end
+        function A.GetRemainingSeconds() return nil end
+        function A.GetState()
+            local authorized = A.IsAuthorized()
+            local sample, age
+            if authorized and lastRequestLatencyMs ~= nil then
+                local now, world = readClock()
+                if now and world == lastResponseWorld and now >= lastResponseTime then
+                    sample, age = lastRequestLatencyMs, now - lastResponseTime
+                end
+            end
+            return {
+                phase = phase, message = message, authorized = authorized,
+                sessionAuthorized = authorized, expiresAt = expiresAt,
+                accessPolicy = "game_session", expiryCheckPolicy = "login_only",
+                periodicRecheck = false, pending = pending ~= nil,
+                linked = startFn ~= nil, restartRequired = restartRequired == true,
+                lastRequestLatencyMs = sample, lastRequestLatencyAgeSeconds = age,
+                latencyScope = "license_http_round_trip"
+            }
+        end
+        return A
+    end
 
     local Core = {Primitives = Primitives, createExpiry = CreateLocalExpiry}
     function Core.new(config, dependencies)
@@ -578,950 +542,817 @@ local PrimeeLicenseCore = (function()
             'License configuration and dependencies required')
         local deps = {}
         for key, value in pairs(dependencies) do deps[key] = value end
-        if deps.localExpiry == nil then deps.localExpiry = CreateLocalExpiry(config, deps.wall) end
+        if deps.localExpiry == nil then deps.localExpiry = CreateLocalExpiry(config) end
         return CreateAuth(Primitives, config, deps)
     end
     return Core
 end)()
 
--- ============================================================================
--- 2. LOGIN UI
--- ============================================================================
-local PrimeeLoginUI = (function()
-    local Module = {}
-    function Module.new(env)
-        env = env or _G
-        local require = env.require or require
-        local function global(name)
-            local ok, value = pcall(function() return env[name] end)
-            if ok then return value end
-        end
-        local UI = {_status = "Enter your key", _busy = false, _data = nil}
-        local function member(object, name)
-            if object == nil then return nil end
-            local ok, value = pcall(function() return object[name] end)
-            if ok then return value end
-        end
-        local function valid(object)
-            local check = member(global("slua"), "isValid")
-            if object == nil then return false end
-            if type(check) == 'function' then
-                local ok, result = pcall(check, object)
-                if ok and result == true then return true end
-            end
-            local game = global('Game')
-            local fallback = member(game, 'IsValid')
-            if type(fallback) == 'function' then
-                local ok, result = pcall(fallback, game, object)
-                return ok and result == true
-            end
-            return false
-        end
-        local function imported(name)
-            local loader = global("import")
-            if type(loader) ~= "function" then return nil end
-            local ok, result = pcall(loader, name)
-            if ok then return result end
-        end
-        local function construct(class, ...)
-            if class == nil then return nil end
-            local ok, result = pcall(class, ...)
-            if ok then return result end
-        end
-        local function vector(x, y)
-            return construct(global("FVector2D") or imported("Vector2D"), x, y)
-                or {X = x, Y = y}
-        end
-        local function color(r, g, b, a)
-            return construct(global("FLinearColor") or imported("LinearColor"), r, g, b, a)
-                or {R = r, G = g, B = b, A = a}
-        end
-        local function visibility(widget, value)
-            local setter = member(widget, "SetWidgetVisibility") or member(widget, "SetVisibility")
-            assert(type(setter) == "function", "UI_VISIBILITY_UNAVAILABLE")
-            setter(widget, value)
-        end
-        local function setTextStyle(widget, size, textColor)
-            pcall(function()
-                local font = widget.Font
-                if font then
-                    font.Size = math.max(1, math.floor(size * (UI._scale or 1) + 0.5))
-                    local assigned = pcall(function() widget.Font = font end)
-                    if not assigned then widget:SetFont(font) end
-                end
-            end)
-            pcall(function() widget:SetAutoWrapText(true) end)
-            pcall(function()
-                local slate = construct(imported("SlateColor"), textColor)
-                if slate then widget:SetColorAndOpacity(slate) end
-            end)
-        end
-        local function detach(data)
-            if not data then return end
-            data.visible = false
-            pcall(function() if valid(data.input) then data.input:SetText("") end end)
-            if data.event and data.eventHandle ~= nil then
-                pcall(function() data.event:Remove(data.eventHandle) end)
-            end
-            if valid(data.container) then
-                pcall(function() data.container:RemoveFromParent() end)
-            end
-            data.onSubmit = nil
-        end
-        function UI.Destroy()
-            local previous = UI._data; UI._data = nil; detach(previous)
-        end
-        function UI.Hide()
-            local data = UI._data
-            if not data or data.hiddenApplied then return true end
-            data.visible = false
-            local ok = pcall(function()
-                if valid(data.input) then data.input:SetText("") end
-                if valid(data.container) then visibility(data.container, data.hidden) end
-            end)
-            if ok then data.hiddenApplied = true end
-            return ok
-        end
-        function UI.SetStatus(message)
-            UI._status = type(message) == "string" and message:sub(1, 160) or "Login unavailable"
-            local data = UI._data
-            if data and data.deliveredStatus == UI._status then return true end
-            if data and valid(data.status) then
-                local ok = pcall(function() data.status:SetText(UI._status) end)
-                if ok then data.deliveredStatus = UI._status end
-                return ok
-            end
-            return false
-        end
-        function UI.SetBusy(busy)
-            UI._busy = busy == true
-            local data = UI._data
-            if data then
-                if data.deliveredBusy == UI._busy then return true end
-                local buttonOK = pcall(function() data.button:SetIsEnabled(not UI._busy) end)
-                local inputOK  = pcall(function() data.input:SetIsEnabled(not UI._busy) end)
-                if buttonOK and inputOK then data.deliveredBusy = UI._busy; return true end
-            end
-            return false
-        end
-        local function fitScale(parent)
-            local result = 1
-            pcall(function()
-                local size = parent:GetCachedGeometry():GetLocalSize()
-                local width, height = size.X, size.Y
-                if type(width) == 'number' and type(height) == 'number'
-                    and width > 24 and height > 24 then
-                    result = math.min(1, (width - 24) / 500, (height - 24) / 248)
-                end
-            end)
-            return result
-        end
-        function UI.Show(onSubmit, initialKey)
-            if type(onSubmit) ~= "function" then return false, "UI_SUBMIT_REQUIRED" end
-            if type(initialKey) == "string" then
-                initialKey = initialKey:match("^%s*(.-)%s*$")
-                if #initialKey == 0 or #initialKey > 512 then initialKey = nil end
-            else
-                initialKey = nil
-            end
-            local data = UI._data
-            if data and valid(data.parent)
-                and math.abs(fitScale(data.parent) - (data.scale or 1)) > 0.001 then
-                UI.Destroy(); data = nil
-            end
-            if data and valid(data.container) and valid(data.parent) then
-                local ok = data.visible or pcall(function()
-                    visibility(data.container, data.visibleEnum)
-                end)
-                if ok then
-                    data.onSubmit, data.visible, data.hiddenApplied = onSubmit, true, false
-                    if initialKey and valid(data.input) then pcall(function() data.input:SetText(initialKey) end) end
-                    UI.SetStatus(UI._status); UI.SetBusy(UI._busy); return true
-                end
-            end
-            UI.Destroy()
-            local okTools, uiTools = pcall(require, "GameLua.Mod.BaseMod.Common.UI.InGameUITools")
-            local getRoot = okTools and member(uiTools, "GetMainControlBaseUI")
-            if type(getRoot) ~= "function" then return false, "UI_NOT_READY" end
-            local okRoot, root = pcall(getRoot)
-            if not okRoot or not valid(root) then return false, "UI_NOT_READY" end
-            local parent = member(root, "CanvasPanel_0")
-            if not valid(parent) then parent = member(root, "CanvasPanel_42") end
-            if not valid(parent) then return false, "UI_NOT_READY" end
-            local game = global("CGame")
-            if type(member(game, "NewObjectFromPath")) ~= "function" then
-                return false, "UI_FACTORY_UNAVAILABLE"
-            end
-            local enums = member(global("UEnums"), "ESlateVisibility")
-            local visibleEnum, hidden = member(enums, "Visible"), member(enums, "Collapsed")
-            local passive = member(enums, "SelfHitTestInvisible")
-            if visibleEnum == nil or hidden == nil or passive == nil then
-                return false, "UI_ENUM_UNAVAILABLE"
-            end
-            UI._scale = fitScale(parent)
-            data = {parent = parent, visible = false, onSubmit = onSubmit,
-                    initialKey = initialKey, visibleEnum = visibleEnum, hidden = hidden, scale = UI._scale}
-            local okBuild = pcall(function()
-                local function make(class, outer)
-                    local widget = game:NewObjectFromPath("/Script/UMG." .. class, outer)
-                    assert(valid(widget), "UI_WIDGET_UNAVAILABLE")
-                    return widget
-                end
-                data.container = make("CanvasPanel", parent)
-                local function add(widget, x, y, width, height, z)
-                    local slot = data.container:AddChildToCanvas(widget)
-                    slot:SetAutoSize(false)
-                    slot:SetPosition(vector(x * UI._scale, y * UI._scale))
-                    slot:SetSize(vector(width * UI._scale, height * UI._scale))
-                    slot:SetZOrder(z)
-                    return slot
-                end
-                local background = make("Border", data.container)
-                background:SetBrushColor(color(0.025, 0.035, 0.05, 0.98))
-                visibility(background, visibleEnum)
-                add(background, 0, 0, 500, 248, 0)
-                local title = make("TextBlock", data.container)
-                title:SetText("VIP - LOGIN")
-                setTextStyle(title, 19, color(0.1, 0.9, 1, 1))
-                visibility(title, passive); add(title, 22, 15, 456, 30, 1)
-                data.input = make("EditableTextBox", data.container)
-                data.input:SetText(initialKey or "")
-                setTextStyle(data.input, 17, color(0.92, 0.94, 0.96, 1))
-                pcall(function() data.input:SetHintText("Enter your key") end)
-                visibility(data.input, visibleEnum); add(data.input, 22, 58, 456, 44, 2)
-                local hint = make("TextBlock", data.container)
-                hint:SetText("Enter your key, then tap LOGIN.")
-                setTextStyle(hint, 12, color(0.72, 0.78, 0.83, 1))
-                visibility(hint, passive); add(hint, 22, 106, 456, 20, 2)
-                data.status = make("TextBlock", data.container)
-                data.status:SetText(UI._status); data.deliveredStatus = UI._status
-                setTextStyle(data.status, 13, color(0.92, 0.94, 0.96, 1))
-                visibility(data.status, passive)
-                pcall(function() data.status:SetAutoWrapText(true) end)
-                add(data.status, 22, 129, 456, 54, 2)
-                data.button = make("Button", data.container)
-                visibility(data.button, visibleEnum)
-                local label = make("TextBlock", data.button)
-                label:SetText("LOGIN")
-                setTextStyle(label, 17, color(0.05, 0.08, 0.12, 1))
-                visibility(label, passive); data.button:AddChild(label)
-                add(data.button, 150, 190, 200, 40, 2)
-                data.event = data.button.OnClicked
-                data.eventHandle = data.event:Add(function()
-                    if UI._data ~= data or not data.visible or UI._busy then return end
-                    local readOK, key = pcall(function() return data.input:GetText() end)
-                    if not readOK or type(key) ~= "string" then
-                        UI.SetStatus("Unable to read the key"); return
-                    end
-                    key = key:match("^%s*(.-)%s*$")
-                    if key == "" or #key > 512 then UI.SetStatus("Enter a valid key"); return end
-                    local submitOK = pcall(data.onSubmit, key)
-                    if not submitOK then UI.SetBusy(false); UI.SetStatus("Login could not start") end
-                end)
-                local slot = parent:AddChildToCanvas(data.container)
-                slot:SetAutoSize(false)
-                slot:SetSize(vector(500 * UI._scale, 248 * UI._scale))
-                slot:SetZOrder(9000)
-                local anchors = slot:GetAnchors()
-                anchors.Minimum, anchors.Maximum = vector(0.5, 0.5), vector(0.5, 0.5)
-                slot:SetAnchors(anchors)
-                slot:SetAlignment(vector(0.5, 0.5))
-                slot:SetPosition(vector(0, 0))
-                visibility(data.container, passive)
-            end)
-            if not okBuild then
-                detach(data); return false, "UI_BUILD_UNAVAILABLE"
-            end
-            data.visible = true; UI._data = data; UI.SetBusy(UI._busy)
-            return true
-        end
-        function UI.ShowNotice(message)
-            local shown, reason = UI.Show(function() return false end)
-            if not shown then return false, reason end
-            UI.SetStatus(message); UI.SetBusy(true); return true
-        end
-        return UI
+    local UI={Version="LunarLoginModule.Murshid.1"}
+    local function member(o,k)
+        if o==nil then return nil end
+        local ok,v=pcall(function() return o[k] end);if ok then return v end
     end
-    return Module
-end)()
+    local function valid(o)
+        if o==nil then return false end
+        local ok,v=pcall(slua.isValid,o);return ok and v==true
+    end
+    local vectorClass=rawget(_G,"FVector2D") or import("Vector2D")
+    local colorClass=rawget(_G,"FLinearColor") or import("LinearColor")
+    local anchorClass=rawget(_G,"Anchors")
+    local importedAnchorClass
+    pcall(function() importedAnchorClass=import("Anchors") end)
+    local function vector(x,y) return vectorClass(x,y) end
+    local function color(r,g,b,a)
+        local function linear(v) v=v/255;if v<=0.04045 then return v/12.92 end;return ((v+0.055)/1.055)^2.4 end
+        return colorClass(linear(r),linear(g),linear(b),a or 1)
+    end
+    local function visibility(w,v)
+        local fn=member(w,"SetWidgetVisibility") or member(w,"SetVisibility")
+        assert(type(fn)=="function","UI_VISIBILITY_UNAVAILABLE");fn(w,v)
+    end
+    local function parent()
+        local ok,t=pcall(require,"GameLua.Mod.BaseMod.Common.UI.InGameUITools")
+        if not ok or type(member(t,"GetMainControlBaseUI"))~="function" then return end
+        local found,root=pcall(t.GetMainControlBaseUI);if not found or not valid(root) then return end
+        local p=member(root,"CanvasPanel_0");if not valid(p) then p=member(root,"CanvasPanel_42") end
+        if valid(p) then return p end
+    end
+    local function destroy(d)
+        if not d then return end
+        d.Visible=false
+        if d.Event and d.Handle~=nil then pcall(function() d.Event:Remove(d.Handle) end) end
+        if d.GetKeyEvent and d.GetKeyHandle~=nil then pcall(function() d.GetKeyEvent:Remove(d.GetKeyHandle) end) end
+        if valid(d.Container) then pcall(function() d.Container:RemoveFromParent() end) end
+        d.Submit=nil;d.Event=nil;d.Handle=nil;d.GetKeyEvent=nil;d.GetKeyHandle=nil;d.Container=nil;d.Parent=nil
+        d.Input=nil;d.Button=nil;d.GetKeyButton=nil;d.Status=nil;d.Title=nil;d.Detail=nil;d.Hint=nil;d.Design=nil;d.Cache=nil
+    end
+    -- Approved red/green frame, dark red/green heading, light full-color body.
+    -- All gradient/angle/brush work happens at construction. No animation,
+    -- background asset, network dependency, text outline or external backdrop.
+    function UI.Build(kind,key,status,submit)
+        local p=parent();if not p then return nil,"UI_NOT_READY" end
+        local enums=UEnums.ESlateVisibility
+        local passive=enums.SelfHitTestInvisible
+        if enums.Visible==nil or passive==nil then return nil,"UI_ENUM_UNAVAILABLE" end
+        local welcome=kind=="welcome"
+        local W,H=welcome and 600 or 500,welcome and 276 or 248
+        local scale=welcome and 0.8 or 1
+        pcall(function()
+            local v=p:GetCachedGeometry():GetLocalSize()
+            if v.X>24 and v.Y>24 then scale=math.min(scale,(v.X-24)/W,(v.Y-24)/H) end
+        end)
+        local d={Parent=p,Visible=false,Submit=submit,Scale=scale}
+        local ok,buildError=pcall(function()
+            local function make(class,outer)
+                local w=CGame:NewObjectFromPath("/Script/UMG."..class,outer)
+                assert(valid(w),"UI_WIDGET_UNAVAILABLE");return w
+            end
+            d.Container=make("CanvasPanel",p)
+            -- Validate and attach the empty root before allocating static artwork.
+            -- Some SLua CanvasSlot bindings expose SetAnchors but not GetAnchors.
+            local slot=p:AddChildToCanvas(d.Container)
+            assert(slot~=nil,"UI_CANVAS_SLOT_UNAVAILABLE")
+            local got,anchors=pcall(function() return anchorClass() end)
+            if not got or not anchors then got,anchors=pcall(function() return importedAnchorClass() end) end
+            if not got or not anchors then
+                local getter=member(slot,"GetAnchors")
+                if type(getter)=="function" then got,anchors=pcall(getter,slot) end
+            end
+            assert(got and anchors,"UI_ANCHORS_UNAVAILABLE")
+            anchors.Minimum=vector(.5,.5);anchors.Maximum=vector(.5,.5)
+            slot:SetAutoSize(false);slot:SetSize(vector(W,H));slot:SetZOrder(9200)
+            slot:SetAnchors(anchors);slot:SetAlignment(vector(.5,.5));slot:SetPosition(vector(0,0))
+            local pivot=member(d.Container,"SetRenderTransformPivot")
+            if type(pivot)=="function" then pcall(pivot,d.Container,vector(.5,.5)) end
+            local resize=member(d.Container,"SetRenderScale")
+            if type(resize)=="function" then pcall(resize,d.Container,vector(scale,scale)) end
+            visibility(d.Container,passive)
+            local design=make("CanvasPanel",d.Container);d.Design=design
+            local artRoot=design
+            local canCache,cache=pcall(make,"InvalidationBox",d.Container)
+            if canCache and valid(cache) and type(member(cache,"SetCanCache"))=="function" then
+                local attached=pcall(function()cache:AddChild(design);cache:SetCanCache(true);visibility(cache,passive)end)
+                if attached then artRoot=cache;d.Cache=cache end
+            end
+            local artSlot=d.Container:AddChildToCanvas(artRoot)
+            artSlot:SetAutoSize(false);artSlot:SetPosition(vector(0,0));artSlot:SetSize(vector(W,H));artSlot:SetZOrder(1)
+            visibility(design,passive)
+            local function add(w,x,y,ww,hh,z,dynamic)
+                local slot=(dynamic and d.Container or design):AddChildToCanvas(w)
+                slot:SetAutoSize(false);slot:SetPosition(vector(x,y));slot:SetSize(vector(ww,hh));slot:SetZOrder(z)
+                return slot
+            end
+            -- Flatten static gradient rectangles before applying 50% alpha.
+            -- Overlapping body/badge/button fills must not accumulate opacity.
+            local artwork={}
+            local function drawRect(x,y,ww,hh,c,z,opacity)
+                local w=make("Border",d.Container)
+                w:SetBrushColor(colorClass(c.R,c.G,c.B,opacity or .5));visibility(w,passive)
+                add(w,x,y,ww,hh,z);return w
+            end
+            local function rect(x,y,ww,hh,c,z,opacity)
+                artwork[#artwork+1]={X=x,Y=y,W=ww,H=hh,C=c,Z=z,A=opacity or .5,Order=#artwork+1}
+            end
+            local function renderArt()
+                table.sort(artwork,function(a,b)
+                    if a.Z==b.Z then return a.Order>b.Order end
+                    return a.Z>b.Z
+                end)
+                local covered={}
+                local function put(out,x,y,w,h)
+                    if w>.00001 and h>.00001 then out[#out+1]={X=x,Y=y,W=w,H=h} end
+                end
+                for _,shape in ipairs(artwork) do
+                    local pieces={{X=shape.X,Y=shape.Y,W=shape.W,H=shape.H}}
+                    for _,cover in ipairs(covered) do
+                        local nextPieces={}
+                        for _,piece in ipairs(pieces) do
+                            local x1=math.max(piece.X,cover.X);local y1=math.max(piece.Y,cover.Y)
+                            local x2=math.min(piece.X+piece.W,cover.X+cover.W)
+                            local y2=math.min(piece.Y+piece.H,cover.Y+cover.H)
+                            if x2<=x1 or y2<=y1 then nextPieces[#nextPieces+1]=piece
+                            else
+                                put(nextPieces,piece.X,piece.Y,piece.W,y1-piece.Y)
+                                put(nextPieces,piece.X,y2,piece.W,piece.Y+piece.H-y2)
+                                put(nextPieces,piece.X,y1,x1-piece.X,y2-y1)
+                                put(nextPieces,x2,y1,piece.X+piece.W-x2,y2-y1)
+                            end
+                        end
+                        pieces=nextPieces;if #pieces==0 then break end
+                    end
+                    -- Coalesce adjacent pieces of the same solid gradient strip.
+                    -- This keeps clipping from multiplying native UI widgets.
+                    local changed=true
+                    while changed do
+                        changed=false
+                        for i=1,#pieces do
+                            local a=pieces[i]
+                            for j=i+1,#pieces do
+                                local b=pieces[j]
+                                local vertical=math.abs(a.X-b.X)<.00001 and math.abs(a.W-b.W)<.00001
+                                    and (math.abs(a.Y+a.H-b.Y)<.00001 or math.abs(b.Y+b.H-a.Y)<.00001)
+                                local horizontal=math.abs(a.Y-b.Y)<.00001 and math.abs(a.H-b.H)<.00001
+                                    and (math.abs(a.X+a.W-b.X)<.00001 or math.abs(b.X+b.W-a.X)<.00001)
+                                if vertical or horizontal then
+                                    local x,y=math.min(a.X,b.X),math.min(a.Y,b.Y)
+                                    a.W=math.max(a.X+a.W,b.X+b.W)-x
+                                    a.H=math.max(a.Y+a.H,b.Y+b.H)-y;a.X=x;a.Y=y
+                                    table.remove(pieces,j);changed=true;break
+                                end
+                            end
+                            if changed then break end
+                        end
+                    end
+                    for _,piece in ipairs(pieces) do
+                        drawRect(piece.X,piece.Y,piece.W,piece.H,shape.C,shape.Z,shape.A)
+                    end
+                    covered[#covered+1]=shape
+                end
+                artwork=nil
+            end
+            local function sample(stops,t,opacity)
+                t=math.max(0,math.min(1,t));local a,b,u
+                if t<=.5 then a,b,u=stops[1],stops[2],t*2 else a,b,u=stops[2],stops[3],(t-.5)*2 end
+                return color(a[1]+(b[1]-a[1])*u,a[2]+(b[2]-a[2])*u,a[3]+(b[3]-a[3])*u,opacity)
+            end
+            local function panel(x,y,ww,hh,cut,stops,z,columns,opacity)
+                columns=math.min(columns,12) -- Static cached gradient geometry.
+                for i=0,columns-1 do
+                    local a=ww*i/columns;local b=ww*(i+1)/columns
+                    local inset=math.max(0,cut-math.min(a,ww-b))
+                    rect(x+a,y+inset,b-a,hh-inset*2,sample(stops,(i+.5)/columns,opacity),z,opacity)
+                end
+            end
+            local function rail(x,y,ww,hh,stops,z,columns)
+                columns=math.min(columns,12)
+                for i=0,columns-1 do
+                    rect(x+ww*i/columns,y,ww/columns,hh,sample(stops,(i+.5)/columns),z)
+                end
+            end
+            local function line(ax,ay,bx,by,th,c,z)
+                local dx,dy=bx-ax,by-ay
+                local len=math.sqrt(dx*dx+dy*dy)
+                if len<=0 then return end
+                local angle
+                if dx==0 then angle=dy>=0 and 90 or -90
+                else angle=math.atan(dy/dx)*180/math.pi;if dx<0 then angle=angle+180 end end
+                local w=drawRect((ax+bx-len)/2,(ay+by-th)/2,len,th,c,z,z>=7 and 1 or .5)
+                w:SetRenderTransformPivot(vector(.5,.5));w:SetRenderAngle(angle)
+            end
+            local slate=import("SlateColor")
+            local fontObject
+            if slua and type(slua.loadObject)=="function" then
+                local loaded,obj=pcall(slua.loadObject,"/Engine/EngineFonts/Roboto.Roboto")
+                if loaded and valid(obj) then fontObject=obj end
+            end
+            local function style(w,size,c,bold)
+                local font=member(w,"Font")
+                if font then
+                    if type(font)=="table" then local copy={};for k,v in pairs(font) do copy[k]=v end;font=copy end
+                    font.Size=size
+                    if fontObject then font.FontObject=fontObject;font.TypefaceFontName=bold and "Bold" or "Regular" end
+                    if font.OutlineSettings then
+                        local outline=font.OutlineSettings
+                        if type(outline)=="table" then local copy={};for k,v in pairs(outline) do copy[k]=v end;outline=copy end
+                        outline.OutlineSize=0;font.OutlineSettings=outline
+                    end
+                    w:SetFont(font)
+                end
+                w:SetColorAndOpacity(slate(c))
+                pcall(function()w:SetShadowOffset(vector(0,0));w:SetShadowColorAndOpacity(color(0,0,0,0))end)
+                pcall(function() w:SetAutoWrapText(true) end)
+            end
+            local function text(value,x,y,ww,hh,size,c,z,bold,center,dynamic)
+                local w=make("TextBlock",d.Container);w:SetText(value);style(w,size,c,bold)
+                visibility(w,passive);add(w,x,y,ww,hh,z,dynamic)
+                if center then pcall(function() w:SetJustification(1) end) end
+                return w
+            end
+            local frame={{4,13,29},{8,68,146},{14,126,255}}
+            local bright={{57,104,163},{111,181,255},{195,225,255}}
+            local edge={{1,5,13},{5,22,49},{8,58,122}}
+            local body={{3,7,15},{7,20,39},{9,38,76}}
+            local header={{2,7,17},{6,27,61},{9,72,157}}
+            local gold={{13,47,92},{77,161,255},{13,88,181}}
+            local white=color(255,255,255)
+            local forest=color(231,243,255)
+            local burgundy=color(192,221,255)
+            -- Perimeter only: an opaque full-panel backing would destroy
+            -- the requested body transparency even with alpha on the body.
+            panel(6,6,W-12,H-12,10,body,2,24,.5)
+            rail(13,0,W-26,6,frame,3,24)
+            rail(13,H-6,W-26,6,frame,3,24)
+            rect(0,13,6,H-26,color(4,13,29),3)
+            rect(W-6,13,6,H-26,color(14,126,255),3)
+            rail(13,1,W-26,1.5,bright,3,24)
+            rail(13,H-3,W-26,1.5,edge,3,24)
+            rect(1,13,1.5,H-26,color(68,134,211),3)
+            rect(W-3,13,1.5,H-26,color(180,222,255),3)
+            for _,s in ipairs({{1,13,13,1},{1,H-13,13,H-1}}) do line(s[1],s[2],s[3],s[4],2,color(91,159,239),3) end
+            for _,s in ipairs({{W-13,1,W-1,13},{W-13,H-1,W-1,H-13}}) do line(s[1],s[2],s[3],s[4],2,color(154,211,255),3) end
+            panel(10,10,W-20,65,16,gold,4,24,1)
+            panel(13,13,W-26,59,14,header,5,32,1)
+            if welcome then
+                d.Title=text("Welcome to VIP Lua mod",24,22,W-48,42,19,white,7,true,true)
+                local pw=math.min(340,W-72);local px=(W-pw)/2
+                panel(px,99,pw,51,12,gold,4,16)
+                panel(px+3,102,pw-6,45,10,{{4,19,42},{13,68,132},{4,28,64}},5,20)
+                d.Detail=text("Kill limit 8-10",px+16,109,pw-32,34,23,white,7,true,true)
+                d.Hint=text("Play smart and avoid report",30,165,W-60,32,17,forest,7,true,true)
+            else
+                d.Title=text("VIP",22,15,W-44,31,24,white,7,true,true)
+                text("LOGIN",22,45,W-44,21,12,white,7,true,true)
+                line(W/2-118,56,W/2-47,56,1,color(224,242,255),7)
+                line(W/2+47,56,W/2+118,56,1,color(224,242,255),7)
+                text("LOGIN KEY",22,82,W-44,20,13,burgundy,7,true,false)
+                rail(27,104,W-54,2,gold,4,24)
+                rail(27,143,W-54,2,gold,4,24)
+                rect(20,111,2,27,color(13,47,92),4)
+                rect(W-22,111,2,27,color(13,88,181),4)
+                line(20,111,27,104,2,color(77,161,255),4)
+                line(W-27,104,W-20,111,2,color(77,161,255),4)
+                line(20,138,27,145,2,color(77,161,255),4)
+                line(W-27,145,W-20,138,2,color(77,161,255),4)
+                d.Input=make("EditableTextBox",d.Container)
+                d.Input:SetText(key or "")
+                -- Input-specific native style; TextBlock-only methods stay unused.
+                local fg=forest;local bg=color(3,7,15,0)
+                local inputStyle=member(d.Input,"WidgetStyle")
+                if inputStyle then
+                    if type(inputStyle)=="table" then local copy={};for k,v in pairs(inputStyle) do copy[k]=v end;inputStyle=copy end
+                    local inputFont=member(inputStyle,"Font")
+                    if inputFont then
+                        if type(inputFont)=="table" then local copy={};for k,v in pairs(inputFont) do copy[k]=v end;inputFont=copy end
+                        inputFont.Size=17
+                        if fontObject then inputFont.FontObject=fontObject;inputFont.TypefaceFontName="Regular" end
+                        inputStyle.Font=inputFont
+                    end
+                    inputStyle.ForegroundColor=slate(fg);inputStyle.ReadOnlyForegroundColor=slate(fg)
+                    for _,name in ipairs({"BackgroundImageNormal","BackgroundImageHovered","BackgroundImageFocused","BackgroundImageReadOnly"}) do
+                        local brush=member(inputStyle,name)
+                        if brush then
+                            if type(brush)=="table" then local copy={};for k,v in pairs(brush) do copy[k]=v end;brush=copy end
+                            brush.TintColor=slate(bg);inputStyle[name]=brush
+                        end
+                    end
+                    d.Input.WidgetStyle=inputStyle
+                else
+                    local inputFont=member(d.Input,"Font")
+                    if inputFont then
+                        if type(inputFont)=="table" then local copy={};for k,v in pairs(inputFont) do copy[k]=v end;inputFont=copy end
+                        inputFont.Size=17;d.Input.Font=inputFont
+                    end
+                    d.Input.ForegroundColor=fg;d.Input.BackgroundColor=bg
+                end
+                local setForeground=member(d.Input,"SetForegroundColor")
+                if type(setForeground)=="function" then setForeground(d.Input,fg) end
+                pcall(function() d.Input:SetHintText("Enter your key") end)
 
--- ============================================================================
--- 3. WELCOME UI
--- ============================================================================
-local PrimeeWelcomeUI = (function()
-    local Module = {}
-    function Module.new(env)
-        env = env or _G
-        local require = env.require or require
-        local function global(n)
-            local ok, v = pcall(function() return env[n] end)
-            if ok then return v end
-        end
-        local function member(o, k)
-            if o == nil then return nil end
-            local ok, v = pcall(function() return o[k] end)
-            if ok then return v end
-        end
-        local function valid(o)
-            local c = member(global("slua"), "isValid")
-            if o == nil then return false end
-            if type(c) == 'function' then
-                local ok, v = pcall(c, o)
-                if ok and v == true then return true end
+                -- Key visibility toggle: keep the real key separately so hiding the
+                -- field never changes the value sent to the existing verifier.
+                d.KeyVisible=false
+                d.SecretKey=key or ""
+                d.UsingMaskFallback=true
+                pcall(function() d.Input:SetText(string.rep("*",#d.SecretKey)) end)
+                pcall(function() d.Input:SetIsReadOnly(true) end)
+                visibility(d.Input,enums.Visible);add(d.Input,23,107,W-100,35,8,true)
+
+                -- Eye control placed inside the right edge of the original key field.
+                d.EyeButton=make("Button",d.Container)
+                panel(W-70,108,43,34,7,{{5,40,92},{10,93,192},{4,46,108}},5,12)
+                pcall(function() d.EyeButton:SetBackgroundColor(color(255,255,255,0)) end)
+                visibility(d.EyeButton,enums.Visible)
+                add(d.EyeButton,W-70,108,43,34,10,true)
+                local ex,ey=W-48.5,125
+                local eyeColor=color(190,235,255)
+                line(ex-11,ey,ex-5,ey-5,2,eyeColor,12)
+                line(ex-5,ey-5,ex,ey-7,2,eyeColor,12)
+                line(ex,ey-7,ex+5,ey-5,2,eyeColor,12)
+                line(ex+5,ey-5,ex+11,ey,2,eyeColor,12)
+                line(ex+11,ey,ex+5,ey+5,2,eyeColor,12)
+                line(ex+5,ey+5,ex,ey+7,2,eyeColor,12)
+                line(ex,ey+7,ex-5,ey+5,2,eyeColor,12)
+                line(ex-5,ey+5,ex-11,ey,2,eyeColor,12)
+                rect(ex-2,ey-2,4,4,eyeColor,13,1)
+                rect(ex-1,ey-1,2,2,color(5,40,92),14,1)
+                d.EyeEvent=d.EyeButton.OnClicked
+                d.EyeHandle=d.EyeEvent:Add(function()
+                    if not d.Visible then return end
+                    if not d.KeyVisible then
+                        pcall(function() d.Input:SetText(d.SecretKey or "") end)
+                        pcall(function() d.Input:SetIsReadOnly(false) end)
+                        d.KeyVisible=true
+                    else
+                        local okRead,current=pcall(function() return d.Input:GetText() end)
+                        if okRead and type(current)=="string" then d.SecretKey=current end
+                        pcall(function() d.Input:SetText(string.rep("*",#(d.SecretKey or ""))) end)
+                        pcall(function() d.Input:SetIsReadOnly(true) end)
+                        d.KeyVisible=false
+                    end
+                end)
+
+                d.Hint=text("Your key is saved automatically",22,149,W-44,19,11,burgundy,7,false,false)
+                d.Status=text(status or "Enter your key",22,170,W-44,23,11,burgundy,8,false,false,true)
             end
-            local g = global('Game'); local f = member(g, 'IsValid')
-            if type(f) == 'function' then
-                local ok, v = pcall(f, g, o)
-                return ok and v == true
+            local by=welcome and 212 or 201
+            local bh=welcome and 42 or 34
+            local function makeActionButton(labelText,bx,bw,onClick)
+                local button=make("Button",d.Container)
+                panel(bx-4,by-3,bw+8,bh+6,9,gold,4,16)
+                panel(bx,by,bw,bh,8,{{5,40,92},{10,93,192},{4,46,108}},5,16)
+                pcall(function() button:SetBackgroundColor(color(255,255,255,0)) end)
+                visibility(button,enums.Visible)
+                local label=make("TextBlock",button)
+                label:SetText(labelText);style(label,17,white,true);visibility(label,passive)
+                local labelSlot=button:AddChild(label)
+                pcall(function() labelSlot:SetHorizontalAlignment(2);labelSlot:SetVerticalAlignment(2) end)
+                add(button,bx,by,bw,bh,9,true)
+                local event=button.OnClicked
+                local handle=event:Add(onClick)
+                return button,event,handle
             end
-            return false
-        end
-        local function imported(n)
-            local l = global("import")
-            if type(l) ~= "function" then return nil end
-            local ok, v = pcall(l, n); if ok then return v end
-        end
-        local function construct(c, ...)
-            if c == nil then return nil end
-            local ok, v = pcall(c, ...); if ok then return v end
-        end
-        local function vector(x, y)
-            return construct(global("FVector2D") or imported("Vector2D"), x, y) or {X = x, Y = y}
-        end
-        local function linear(v)
-            v = v / 255
-            if v <= 0.04045 then return v / 12.92 end
-            return ((v + 0.055) / 1.055) ^ 2.4
-        end
-        local function color(r, g, b, a)
-            r, g, b, a = linear(r), linear(g), linear(b), a or 1
-            return construct(global("FLinearColor") or imported("LinearColor"), r, g, b, a)
-                or {R = r, G = g, B = b, A = a}
-        end
-        local function visibility(w, v)
-            local s = member(w, "SetWidgetVisibility") or member(w, "SetVisibility")
-            if type(s) == 'function' then s(w, v) end
-        end
-        local WelcomeUI = {Width = 600, Height = 276}
-        local WelcomeText = {
-            "VIP",
-            "Kill limit 8-10",
-            "Play smart and avoid report",
-        }
-        local UI = {_shown = false, _data = nil}
-        local function detach(data)
-            if not data then return end
-            data.Visible = false
-            if data.Event and data.EventHandle ~= nil then
-                pcall(function() data.Event:Remove(data.EventHandle) end)
+            if welcome then
+                local bw,bx=202,(W-202)/2
+                d.Button,d.Event,d.Handle=makeActionButton("OK",bx,bw,function()
+                    if not d.Visible or d.Busy then return end
+                    destroy(d);d.Dismissed=true
+                    local l=_G.LunarLoginRuntime
+                    if l and l.WelcomeUI==d then l.WelcomeUI=nil;l.Dismissed=true;l.NeedsUpdate=false end
+                end)
+            else
+                local bw=190
+                d.GetKeyButton,d.GetKeyEvent,d.GetKeyHandle=makeActionButton("GET KEY",35,bw,function()
+                    if not d.Visible or d.Busy then return end
+                    pcall(function()
+                        local Web=require("client.slua.logic.url.logic_webview_sdk")
+                        if Web and Web.OpenURL then Web:OpenURL("https://") end
+                    end)
+                end)
+                d.Button,d.Event,d.Handle=makeActionButton("LOGIN",275,bw,function()
+                    if not d.Visible or d.Busy then return end
+                    local okRead,k=pcall(function() return d.Input:GetText() end)
+                    if d.KeyVisible and okRead and type(k)=="string" then
+                        d.SecretKey=k
+                    elseif not d.KeyVisible then
+                        k=d.SecretKey or ""
+                        okRead=true
+                    end
+                    if not okRead or type(k)~="string" then return end
+                    k=k:match("^%s*(.-)%s*$")
+                    if #k==0 or #k>512 then d.Status:SetText("Enter a valid key");return end
+                    if d.Submit then d.Submit(k) end
+                end)
             end
-            if valid(data.Container) then
-                pcall(function() visibility(data.Container, data.Hidden) end)
-                pcall(function() data.Container:RemoveFromParent() end)
+            renderArt()
+
+        end)
+        if not ok then UI.LastBuildError=tostring(buildError);destroy(d);return nil,"UI_BUILD_UNAVAILABLE" end
+        UI.LastBuildError=nil
+        d.Visible=true;return d
+    end
+    _G.LunarUIAssetCache=nil
+    -- Hot UI upgrades retain the existing verified or pending license session.
+    local existing=_G.LunarLoginRuntime
+    if existing and existing.UIFactory and existing.UIFactory.Version~=UI.Version
+        and existing.Scope==UXOfficialLicenseCore.Primitives.md5(UXOfficialLicenseConfig.url.."\0"..UXOfficialLicenseConfig.game.."\0"..UXOfficialLicenseConfig.secret) then
+        local visibleWelcome=existing.WelcomeUI and existing.WelcomeUI.Visible
+        if existing.DestroyUI then existing.DestroyUI() end
+        existing.UIFactory.Build=UI.Build;existing.UIFactory.Version=UI.Version
+        if visibleWelcome then existing.WelcomeShown=false end
+        existing.NeedsUpdate=true
+    end
+    local function hex(s) return (s:gsub('.',function(c) return string.format('%02x',string.byte(c)) end)) end
+    local function unhex(s)
+        if type(s)~="string" or #s>1024 or #s%2~=0 or s:find('[^%x]') then return nil end
+        return (s:gsub('..',function(v) return string.char(tonumber(v,16)) end))
+    end
+    local current=_G.LunarLoginRuntime
+    -- Existing runtime survives character recreation and source reload in this process.
+    local expectedScope=UXOfficialLicenseCore.Primitives.md5(UXOfficialLicenseConfig.url.."\0"..UXOfficialLicenseConfig.game.."\0"..UXOfficialLicenseConfig.secret)
+    if not current or current.Scope~=expectedScope then
+        if current and current.DestroyUI then current.DestroyUI() end
+        local L={Authorized=false,Pending=false,NeedsUpdate=true,WelcomeShown=false,
+            Key="",Seed="",Scope=expectedScope,StorageVersion=1,Status="Enter your key",Diagnostics={HTTP=0,DeviceReads=0}}
+        _G.LunarLoginRuntime=L
+        L.UIFactory=UI
+        -- Identity is pinned independently of the feature-settings location.
+        -- All IO is bounded and happens at startup/login, or a delayed save retry.
+        local paths=loginStoragePaths()
+        for i,path in ipairs(paths) do paths[i]=path:gsub("VIP_UMG_ESP_settings.lua$","VIP_LOGIN_MURSHID_V7_settings.lua") end
+        local function loginPath(featurePath)
+            if type(featurePath)~="string" then return nil end
+            local prefix=featurePath:match("^(.*[/\\])[^/\\]+$")
+            return (prefix or "").."VIP_LOGIN_MURSHID_V7_settings.lua"
+        end
+        local function identityPath(path)
+            return path:gsub("VIP_LOGIN_MURSHID_V7_settings%.lua$","VIP_DEVICE_MURSHID_V1_settings.lua")
+        end
+        local function digest(key,seed)
+            return UXOfficialLicenseCore.Primitives.md5("LUNAR-DEVICE-1\0"..L.Scope.."\0"..key.."\0"..seed)
+        end
+        local function readRecord(path,identity)
+            if not (io and type(io.open)=="function") then return nil,"unreadable" end
+            local ok,file,reason,code=pcall(io.open,path,"r")
+            if not ok then return nil,"unreadable" end
+            if not file then
+                local text=type(reason)=="string" and reason:lower() or ""
+                if reason==nil or code==2 or text:find("no such file",1,true)
+                    or text:find("not found",1,true) or text:find("does not exist",1,true) then
+                    return nil,"missing"
+                end
+                return nil,"unreadable"
             end
+            local good,data=pcall(function() return file:read(4097) end)
+            pcall(function() file:close() end)
+            if not good or type(data)~="string" then return nil,"unreadable" end
+            if #data>4096 then return nil,"invalid" end
+            local scope=data:match('%f[%w_]Scope%s*=%s*"([%x]+)"')
+            if scope and scope~=L.Scope then return nil,"other_scope" end
+            if scope~=L.Scope then return nil,"invalid" end
+            local key=unhex(data:match('%f[%w_]KeyHex%s*=%s*"([^"]*)"'))
+            local seed=unhex(data:match('%f[%w_]SeedHex%s*=%s*"([^"]*)"'))
+            if key==nil or seed==nil or #seed==0 or #seed>512 then return nil,"invalid" end
+            local check=data:match('%f[%w_]Check%s*=%s*"([%x]+)"')
+            local version=data:match('%f[%w_]Version%s*=%s*(%d+)')
+            if identity or check or version then
+                if version~="1" or check~=digest(key,seed) then return nil,"invalid" end
+            end
+            return {Key=key,Seed=seed,Path=path,Identity=identity,Checked=version=="1"},"valid"
         end
-        function UI:Destroy()
-            local p = UI._data; UI._data = nil; detach(p)
+        local function candidates()
+            local list,seen={},{}
+            local function add(path)
+                if type(path)=="string" and not seen[path] then seen[path]=true;list[#list+1]=path end
+            end
+            add(L.Path);add(L.PreferredPath)
+            for _,path in ipairs(paths) do add(path) end
+            return list
         end
-        local function parent()
-            local okT, tools = pcall(require, "GameLua.Mod.BaseMod.Common.UI.InGameUITools")
-            if not okT then return nil end
-            local getRoot = member(tools, "GetMainControlBaseUI")
-            if type(getRoot) ~= "function" then return nil end
-            local ok, root = pcall(getRoot)
-            if not ok or not valid(root) then return nil end
-            local canvas = member(root, "CanvasPanel_0")
-            if not valid(canvas) then canvas = member(root, "CanvasPanel_42") end
-            if valid(canvas) then return root, canvas end
-        end
-        function UI:Show()
-            if UI._shown and UI._data and valid(UI._data.Container) then
-                visibility(UI._data.Container, UI._data.Passive)
-                UI._data.Visible = true
+        local function recover()
+            if L.IdentityPinned then return true end
+            local identities,legacy,issues={},{},{}
+            local function collect(base,path,identity)
+                local record,state=readRecord(path,identity)
+                if record then
+                    record.Base=base
+                    local list=identity and identities or legacy;list[#list+1]=record
+                elseif state=="invalid" or (state=="unreadable" and base==L.PreferredPath) then
+                    issues[#issues+1]=state
+                end
+            end
+            for _,base in ipairs(candidates()) do
+                local device=identityPath(base)
+                collect(base,device,true);collect(base,device..".bak",true)
+                collect(base,base,false);collect(base,base..".bak",false)
+            end
+            local list=#identities>0 and identities or legacy
+            local first=list[1]
+            if first then
+                for _,record in ipairs(list) do
+                    if record.Seed~=first.Seed then
+                        L.IdentityError="DEVICE_CACHE_CONFLICT";L.Diagnostics.Identity="conflict";return false
+                    end
+                end
+                L.Seed=first.Seed;L.Key=first.Key;L.Path=first.Base
+                if L.Key=="" then
+                    for _,record in ipairs(list) do
+                        if record.Key~="" then L.Key=record.Key;break end
+                    end
+                end
+                -- A matching legacy copy can recover the key after a lost write.
+                if L.Key=="" then
+                    for _,record in ipairs(legacy) do
+                        if record.Seed==L.Seed and record.Key~="" then L.Key=record.Key;break end
+                    end
+                end
+                L.IdentityPinned=true;L.IdentityPersisted=true;L.HasIdentityRecord=first.Identity
+                L.IdentityError=nil;L.Dirty=true
+                L.Diagnostics.Identity=first.Identity and "restored" or "legacy_migration"
                 return true
             end
-            UI:Destroy()
-            local root, par = parent()
-            if not par then return false, "WELCOME_ROOT_UNAVAILABLE" end
-            local game = global("CGame")
-            if type(member(game, "NewObjectFromPath")) ~= "function" then
-                return false, "WELCOME_FACTORY_UNAVAILABLE"
+            if #issues>0 then
+                L.IdentityError="DEVICE_CACHE_RECOVERY_REQUIRED";L.Diagnostics.Identity="recovery_required";return false
             end
-            local enums = member(global("UEnums"), "ESlateVisibility")
-            local visible, hidden, passive = member(enums, "Visible"),
-                member(enums, "Collapsed"), member(enums, "SelfHitTestInvisible")
-            if visible == nil or hidden == nil or passive == nil then
-                return false, "WELCOME_ENUM_UNAVAILABLE"
-            end
-            local data = {Root = root, Parent = par, Visible = false,
-                          Hidden = hidden, Passive = passive}
-            local ok = pcall(function()
-                local function make(class, outer)
-                    local w = game:NewObjectFromPath("/Script/UMG." .. class, outer)
-                    assert(valid(w), "WELCOME_WIDGET_UNAVAILABLE")
-                    return w
-                end
-                data.Container = make("CanvasPanel", par)
-                visibility(data.Container, hidden)
-                local function add(w, x, y, ww, hh, z)
-                    local s = data.Container:AddChildToCanvas(w)
-                    s:SetAutoSize(false)
-                    s:SetPosition(vector(x, y))
-                    s:SetSize(vector(ww, hh))
-                    s:SetZOrder(z)
-                    return s
-                end
-                local function rect(x, y, ww, hh, c, z)
-                    local w = make("Border", data.Container)
-                    w:SetBrushColor(c)
-                    visibility(w, passive)
-                    add(w, x, y, ww, hh, z)
-                    return w
-                end
-                local slateColor
-                pcall(function() slateColor = imported("SlateColor") end)
-                local function textStyle(w, size, c)
-                    local font = member(w, "Font")
-                    if font ~= nil then
-                        if type(font) == 'table' then
-                            local copy = {}
-                            for k, v in pairs(font) do copy[k] = v end
-                            font = copy
-                        end
-                        font.Size = size
-                        pcall(function() w:SetFont(font) end)
+            L.IdentityError=nil;L.Diagnostics.Identity="new_install";return true
+        end
+        local function payload(key,seed)
+            return 'return { Version = 1, Scope = "'..L.Scope..'", KeyHex = "'..hex(key)
+                ..'", SeedHex = "'..hex(seed)..'", Check = "'..digest(key,seed)..'" }'
+        end
+        local function verifiedWrite(path,identity,key,seed,data)
+            local current,state=readRecord(path,identity)
+            if current and current.Checked and current.Seed==seed and current.Key==key then return true end
+            if state=="unreadable" or state=="other_scope" then return false end
+            if current and current.Seed~=seed and (identity or not L.HasIdentityRecord) then return false end
+            local ok=loginWriteSettings(path,data)
+            if not ok then return false end
+            local result=readRecord(path,identity)
+            return result~=nil and result.Checked and result.Seed==seed and result.Key==key
+        end
+        L.Save=function()
+            if L.Seed=="" or L.IdentityError then return false end
+            local key=L.AttemptKey or L.Key
+            local data=payload(key,L.Seed)
+            local preferred=candidates()
+            for _,base in ipairs(preferred) do
+                local device=identityPath(base)
+                local old,oldState=readRecord(base,false)
+                local current,currentState=readRecord(device,true)
+                -- Never fork around an unreadable/conflicting saved identity.
+                if oldState~="unreadable" and currentState~="unreadable"
+                    and oldState~="other_scope" and currentState~="other_scope"
+                    and (not old or old.Seed==L.Seed or L.HasIdentityRecord)
+                    and (not current or current.Seed==L.Seed) then
+                    local a=verifiedWrite(device,true,key,L.Seed,data)
+                    local b=verifiedWrite(device..".bak",true,key,L.Seed,data)
+                    local c=verifiedWrite(base,false,key,L.Seed,data)
+                    local d=verifiedWrite(base..".bak",false,key,L.Seed,data)
+                    if (a or b) and ((a and b) or c or d) then
+                        L.Path=base;L.Key=key;L.IdentityPinned=true;L.IdentityPersisted=true;L.HasIdentityRecord=true
+                        L.IdentityError=nil;L.Dirty=not (a and b and c and d)
+                        L.SaveRetryAt=L.Dirty and (os.time()+30) or nil
+                        L.SaveError=L.Dirty and "Device backup repair pending" or nil
+                        L.Diagnostics.Identity=L.Dirty and "backup_pending" or "saved"
+                        return true
                     end
-                    pcall(function() w:SetColorAndOpacity(slateColor and slateColor(c) or c) end)
-                    pcall(function() w:SetJustification(1) end)
-                    visibility(w, passive)
                 end
-                local function text(value, x, y, ww, hh, size, c, z)
-                    local w = make("TextBlock", data.Container)
-                    w:SetText(value)
-                    textStyle(w, size, c)
-                    pcall(function() w:SetAutoWrapText(true) end)
-                    add(w, x, y, ww, hh, z)
-                    return w
+            end
+            L.Dirty=true;L.SaveRetryAt=os.time()+30
+            L.SaveError="Device cache could not be verified";L.Diagnostics.Identity="save_failed"
+            return false
+        end
+        L.BindSettingsPath=function(featurePath)
+            L.PreferredPath=loginPath(featurePath)
+            -- Once recovered, neither the key nor seed is replaced by settings.
+            if not L.IdentityPinned then recover() end
+            if L.Seed~="" and not L.IdentityError and (L.Dirty or not L.IdentityPersisted) then L.Save() end
+        end
+        L.EnsureIdentity=function()
+            if not L.IdentityPinned then
+                L.Seed=""
+                assert(recover(),L.IdentityError or "DEVICE_CACHE_RECOVERY_REQUIRED")
+            end
+            if L.Seed=="" then
+                L.Diagnostics.DeviceReads=L.Diagnostics.DeviceReads+1
+                local id=Client.GetPhoneDeviceID()
+                assert(type(id)=="string" and #id>0 and #id<=512,"DEVICE_ID_UNAVAILABLE")
+                L.Seed=id
+            end
+            local saved=L.Save()
+            -- A readable previously stored identity stays usable on read-only
+            -- storage. Backup repair must not invent or force a new device ID.
+            assert(saved or L.IdentityPersisted,"DEVICE_CACHE_SAVE_FAILED")
+        end
+        recover()
+        L.DestroyUI=function() destroy(L.LoginUI);destroy(L.WelcomeUI);L.LoginUI=nil;L.WelcomeUI=nil end
+        local function wake()
+            if _G.UXOfficialLogin and _G.UXOfficialLogin._Wake then _G.UXOfficialLogin._Wake() end
+        end
+        L.Core=UXOfficialLicenseCore
+        L.Auth=UXOfficialLicenseCore.new(UXOfficialLicenseConfig,{
+            clock=function() local t=os.time();return t,L.Scope end,
+            wall=function() return os.time() end,
+            serial=function(key)
+                L.EnsureIdentity()
+                return UXOfficialLicenseCore.Primitives.name_uuid('VIP-LUA-V1\0'..key..'\0'..L.Seed)
+            end,
+            decode=function(raw) local json=require("common.json_util");return json.decode(raw) end,
+            post=function(url,headers,body,callback,timeout)
+                local http=ModuleManager.GetModule(ModuleManager.CommonModuleConfig.http_manager)
+                L.Diagnostics.HTTP=L.Diagnostics.HTTP+1
+                return http:Post(url,headers,body,nil,callback,timeout)
+            end,
+            status=function(message,phase)
+                L.Status=message;L.Pending=phase=="pending"
+                if phase=="active" then
+                    L.Authorized=true;L.Key=L.AttemptKey or L.Key;L.Save()
+                    destroy(L.LoginUI);L.LoginUI=nil
+                else L.Authorized=false end
+                L.NeedsUpdate=true
+                local d=L.LoginUI
+                if d then
+                    if d.StatusText~=message then d.Status:SetText(message);d.StatusText=message end
+                    if d.Busy~=L.Pending then
+                        d.Busy=L.Pending
+                        pcall(function() d.Input:SetIsEnabled(not L.Pending);d.Button:SetIsEnabled(not L.Pending);if d.GetKeyButton then d.GetKeyButton:SetIsEnabled(not L.Pending) end end)
+                    end
                 end
-                local W, H = WelcomeUI.Width, WelcomeUI.Height
-                rect(4, 6, W, H, color(18, 5, 10, 0.25), 0)
-                rect(0, 0, W, H, color(186, 137, 74), 1)
-                rect(2, 2, W - 4, H - 4, color(255, 244, 214), 2)
-                local stops = {{116, 16, 46}, {169, 38, 47}, {194, 105, 35}}
-                local segments = 64
-                for i = 0, segments - 1 do
-                    local t = i / (segments - 1)
-                    local left, right, blend
-                    if t <= 0.5 then left, right, blend = stops[1], stops[2], t * 2
-                    else left, right, blend = stops[2], stops[3], (t - 0.5) * 2 end
-                    local x0 = 2 + (W - 4) * i / segments
-                    local x1 = 2 + (W - 4) * (i + 1) / segments
-                    rect(x0, 2, math.min(W - 2, x1 + 0.3) - x0, 76,
-                        color(left[1] + (right[1] - left[1]) * blend,
-                              left[2] + (right[2] - left[2]) * blend,
-                              left[3] + (right[3] - left[3]) * blend), 3)
-                end
-                rect(18, 3, W - 36, 1, color(255, 255, 255, 0.32), 4)
-                rect(2, 78, W - 4, 3, color(238, 188, 93), 4)
-                local title = text(WelcomeText[1], 24, 23, W - 48, 44, 19, color(255, 253, 247), 5)
-                pcall(function() title:SetShadowOffset(vector(0, 1)) end)
-                pcall(function() title:SetShadowColorAndOpacity(color(40, 3, 12, 0.45)) end)
-                rect(30, 100, W - 60, 54, color(255, 226, 159), 3)
-                rect(30, 100, 4, 54, color(160, 33, 49), 4)
-                text(WelcomeText[2], 46, 110, W - 92, 38, 23, color(115, 25, 45), 5)
-                text(WelcomeText[3], 30, 168, W - 60, 32, 17, color(130, 34, 47), 5)
-                local button = make("Button", data.Container)
-                pcall(function() button:SetBackgroundColor(color(131, 25, 47)) end)
-                visibility(button, visible)
-                local label = make("TextBlock", button)
-                label:SetText("OK")
-                textStyle(label, 17, color(255, 251, 238))
-                local ls = button:AddChild(label)
-                pcall(function() ls:SetHorizontalAlignment(2) end)
-                pcall(function() ls:SetVerticalAlignment(2) end)
-                add(button, (W - 164) / 2, 212, 164, 42, 6)
-                data.Event = member(button, "OnClicked")
-                data.EventHandle = data.Event:Add(function()
-                    if UI._data == data and data.Visible then UI:Destroy() end
-                end)
-                local slot = par:AddChildToCanvas(data.Container)
-                slot:SetAutoSize(false)
-                slot:SetSize(vector(W, H))
-                slot:SetZOrder(9200)
-                local anchors = slot:GetAnchors()
-                anchors.Minimum, anchors.Maximum = vector(0.5, 0.5), vector(0.5, 0.5)
-                slot:SetAnchors(anchors)
-                slot:SetAlignment(vector(0.5, 0.5))
-                slot:SetPosition(vector(0, 0))
-                visibility(data.Container, passive)
-            end)
-            if not ok then detach(data); return false, "WELCOME_BUILD_FAILED" end
-            data.Visible = true
-            UI._data = data
-            UI._shown = true
-            return true
-        end
-        function UI:Hide() if UI._data then detach(UI._data) end; UI._data = nil end
-        function UI:IsShown() return UI._shown == true end
-        return UI
-    end
-    return Module
-end)()
-_G.PrimeeWelcomeUI = PrimeeWelcomeUI
-
--- ============================================================================
--- 4. LICENSE RUNTIME
--- ============================================================================
-local PrimeeLicenseRuntime = (function()
-    local Runtime = {}
-    Runtime.__index = Runtime
-    local function finite(n)
-        return type(n) == 'number' and n == n and n >= 0 and n < math.huge
-    end
-    local function read(o, k)
-        if o == nil then return nil end
-        local ok, v = pcall(function() return o[k] end)
-        if ok then return v end
-    end
-    local function static(o, k, ...)
-        local fn = read(o, k)
-        if type(fn) ~= 'function' then return nil end
-        local ok, v = pcall(fn, ...); if ok then return v end
-    end
-    local function call(o, k, ...)
-        local fn = read(o, k)
-        if type(fn) ~= 'function' then return nil end
-        local ok, v = pcall(fn, o, ...); if ok then return v end
-    end
-    local function validConfig(c)
-        return type(c) == 'table' and type(c.url) == 'string' and c.url:match('^https://') ~= nil
-            and type(c.game) == 'string' and #c.game > 0
-            and type(c.secret) == 'string' and #c.secret > 0
-            and finite(c.timeout) and c.timeout > 0 and finite(c.clockSkew)
-    end
-    function Runtime.new(env, config, Core, LoginUI)
-        local self = setmetatable({
-            env = env or _G, reason = 'login_required', active = false,
-            ready = false, disposed = false, uiRetryAt = 0, uiFailures = 0
-        }, Runtime)
-        if not validConfig(config) or type(Core) ~= 'table' or type(Core.new) ~= 'function'
-            or type(Core.Primitives) ~= 'table' then
-            self.reason = 'license_dependencies_unavailable'; return self
-        end
-        local cfg = {}
-        for k, v in pairs(config) do cfg[k] = v end
-        self.timeout = cfg.timeout
-        if type(LoginUI) == 'table' and type(LoginUI.new) == 'function' then
-            local ok, ui = pcall(LoginUI.new, self.env)
-            if ok and type(ui) == 'table' then self.ui = ui end
-        end
-        if type(_G.PrimeeWelcomeUI) == 'table' and type(_G.PrimeeWelcomeUI.new) == 'function' then
-            local okW, w = pcall(_G.PrimeeWelcomeUI.new, self.env)
-            if okW and type(w) == 'table' then self.welcome = w end
-        end
-        self.welcomeShownThisSession = (_G.__Primee_WELCOME_SHOWN_SESSION == true)
-        self.welcomeScheduledAt = nil
-        self.welcomeDelaySeconds = 3.0
-        self.autoLoginAttempted = false
-        self.submit = function(key) return self:login(key) end
-        local ok, auth = pcall(Core.new, cfg, {
-            clock = function() return self:_clock() end,
-            wall = function()
-                local value = static(read(self.env, 'os'), 'time')
-                if finite(value) and value > 0 then return value end
-            end,
-            serial = function(key)
-                local client = read(self.env, 'Client')
-                local value = static(client, 'GetPhoneDeviceID')
-                assert(type(value) == 'string' and #value > 0 and #value <= 512,
-                    'DEVICE_ID_UNAVAILABLE')
-                return Core.Primitives.name_uuid('Primee-LUA-V1\0' .. key .. '\0' .. value)
-            end,
-            decode = function(raw)
-                local json = self:_module('json', nil, 'common.json_util', 'decode')
-                assert(json, 'JSON_UNAVAILABLE')
-                return json.decode(raw)
-            end,
-            post = function(url, headers, body, callback, timeout)
-                local manager = read(self.env, 'ModuleManager')
-                local config = read(manager, 'CommonModuleConfig')
-                local getter = read(manager, 'GetModule')
-                assert(type(getter) == 'function' and config, 'HTTP_MANAGER_UNAVAILABLE')
-                local http = getter(read(config, 'http_manager'))
-                local post = read(http, 'Post')
-                assert(type(post) == 'function', 'HTTP_POST_UNAVAILABLE')
-                return post(http, url, headers, body, nil, callback, timeout)
-            end,
-            status = function(message, phase)
-                self.active = false
-                self.reason = phase == 'active' and 'waiting_maintenance' or 'login_required'
-                self:_ui('SetStatus', message)
-                self:_ui('SetBusy', phase == 'pending')
-                if phase == 'active' then self:_ui('Hide') end
-            end,
+                wake()
+            end
         })
-        if ok and type(auth) == 'table' then self.auth = auth
-        else self.reason = 'license_initialization_unavailable' end
-        return self
-    end
-    function Runtime:_module(cache, globalName, path, method)
-        local found = globalName and read(self.env, globalName)
-        if type(read(found, method)) == 'function' then return found end
-        found = self[cache]
-        if type(read(found, method)) == 'function' then return found end
-        local loader = read(self.env, 'require')
-        if type(loader) == 'function' then
-            local ok, value = pcall(loader, path)
-            if ok and type(read(value, method)) == 'function' then
-                self[cache] = value; return value
+        L.Authorized=L.Auth.IsAuthorized()
+        L.Login=function(key)
+            if L.Authorized or L.Pending then return false end
+            L.AttemptKey=type(key)=="string" and key:match("^%s*(.-)%s*$") or ""
+            local ok,result=pcall(L.Auth.Login,L.AttemptKey)
+            if not ok then L.Status="Login could not start";L.Pending=false;L.NeedsUpdate=true;wake();return false end
+            return result
+        end
+        L.Logout=function()
+            L.Auth.Logout();L.Authorized=false;L.DestroyUI();L.NeedsUpdate=true;wake()
+        end
+        L.Update=function()
+            if L.Pending then L.Auth.Tick() end
+            if L.Dirty and (not L.SaveRetryAt or os.time()>=L.SaveRetryAt or os.time()<L.SaveRetryAt-30) then L.Save() end
+            if L.Authorized then
+                if not L.WelcomeShown then
+                    local d=UI.Build("welcome")
+                    if d then L.WelcomeUI=d;L.WelcomeShown=true end
+                end
+                L.NeedsUpdate=not L.WelcomeShown or L.Dirty
+                return
             end
-        end
-    end
-    function Runtime:_valid(object)
-        if object == nil then return false end
-        if static(read(self.env, 'slua'), 'isValid', object) == true then return true end
-        return call(read(self.env, 'Game'), 'IsValid', object) == true
-    end
-    function Runtime:_clock()
-        local world = static(read(self.env, 'slua'), 'getWorld')
-        if world == nil then return nil end
-        local statics = read(self.env, 'GameplayStatics') or self.statics
-        if type(read(statics, 'GetRealTimeSeconds')) ~= 'function' then
-            local loader = read(self.env, 'import')
-            if type(loader) == 'function' then
-                local ok, value = pcall(loader, 'GameplayStatics')
-                if ok then statics = value end
-            end
-        end
-        if type(read(statics, 'GetRealTimeSeconds')) ~= 'function' then return nil end
-        self.statics = statics
-        local now = static(statics, 'GetRealTimeSeconds', world)
-        if finite(now) then return now, world end
-    end
-    function Runtime:_readGameplay(world)
-        local data = read(self.env, 'GameplayData') or self.gameplayData
-        if data == nil then
-            local loader = read(self.env, 'require')
-            if type(loader) == 'function' then
-                local ok, value = pcall(loader, 'GameLua.GameCore.Data.GameplayData')
-                if ok and value ~= nil then self.gameplayData = value; data = value end
-            end
-        end
-        local pc = static(data, 'GetPlayerController')
-        if not self:_valid(pc) and not self:_valid(read(pc, 'Object')) then
-            pc = call(read(self.env, 'slua_GameFrontendHUD'), 'GetPlayerController')
-        end
-        if not self:_valid(pc) and not self:_valid(read(pc, 'Object')) then
-            return nil, 'waiting_controller'
-        end
-        local pawn = static(data, 'GetPlayerCharacter')
-        if not self:_valid(pawn) then pawn = static(data, 'GetLocalCharacter') end
-        for _, method in ipairs({'GetPlayerCharacterSafety', 'GetCurPawn', 'GetPawn'}) do
-            if not self:_valid(pawn) then pawn = call(pc, method) end
-            if not self:_valid(pawn) then pawn = call(read(pc, 'Object'), method) end
-        end
-        if not self:_valid(pawn) then return nil, 'waiting_pawn' end
-        local tools = self:_module('tools', nil,
-            'GameLua.Mod.BaseMod.Common.UI.InGameUITools', 'GetMainControlBaseUI')
-        local root = static(tools, 'GetMainControlBaseUI')
-        if not self:_valid(root) then return nil, 'waiting_control_ui' end
-        local status = self:_module('gameStatus', 'GameStatus',
-            'client.common.game_status', 'IsInFightingStatus')
-        local loading = self:_module('loading', nil,
-            'client.slua.logic.loading.logic_loading', 'IsShowing')
-        if not status or not loading then return nil, 'readiness_services_unavailable' end
-        if static(status, 'IsInFightingStatus') ~= true then return nil, 'waiting_gameplay' end
-        if static(loading, 'IsShowing') ~= false then return nil, 'waiting_loading' end
-        return {world = world, controller = pc, pawn = pawn, root = root}
-    end
-    local function same(a, b)
-        return a and b and a.world == b.world and a.controller == b.controller
-            and a.pawn == b.pawn and a.root == b.root
-    end
-    function Runtime:_ui(method, ...)
-        local fn = read(self.ui, method)
-        if type(fn) ~= 'function' then return false, 'UI_UNAVAILABLE' end
-        local ok, value, reason = pcall(fn, ...)
-        if not ok then return false, 'UI_TEMPORARILY_UNAVAILABLE' end
-        return value, reason
-    end
-    function Runtime:_clearReadiness(reason)
-        self.active, self.ready = false, false
-        self.identity, self.readySince, self.maintenanceAt, self.maintenanceWorld = nil, nil, nil, nil
-        self.reason = reason
-        self:_ui('Hide')
-    end
-    function Runtime:_showPanel(now, state, blocked, initialKey)
-        if now < self.uiRetryAt then return false end
-        local shown, uiReason
-        if blocked then shown, uiReason = self:_ui('ShowNotice', state.message)
-        else shown, uiReason = self:_ui('Show', self.submit, initialKey) end
-        if shown then
-            self.uiFailures, self.uiError = 0, nil
-            self:_ui('SetStatus', state.message)
-            self:_ui('SetBusy', blocked or state.pending)
-        else
-            self.uiFailures = self.uiFailures + 1
-            self.uiRetryAt = now + (self.uiFailures >= 10 and 5 or 1)
-            self.uiError = type(uiReason) == 'string' and uiReason:match('^UI_[A-Z_]+$')
-                or 'UI_UNAVAILABLE'
-        end
-        return shown == true
-    end
-    function Runtime:update()
-        if self.disposed then self.reason = 'disposed'; return false end
-        if not self.auth then return false end
-        local tickOK = pcall(self.auth.Tick)
-        if not tickOK then
-            self.auth.FailClosed('License maintenance unavailable.')
-            self:_clearReadiness('license_maintenance_unavailable'); return false
-        end
-        local now, world = self:_clock()
-        if not now then self:_clearReadiness('clock_unavailable'); return false end
-        local ready, reason = self:_readGameplay(world)
-        if not ready then self:_clearReadiness(reason); return false end
-        if not same(self.identity, ready) or not self.readySince or now < self.readySince then
-            self.identity, self.readySince = ready, now
-        end
-        self.ready = now - self.readySince >= 3
-        self.maintenanceAt, self.maintenanceWorld = now, world
-        self.active = self.ready and self.auth.IsAuthorized()
-        if not self.ready then
-            self.reason = 'waiting_stable_gameplay'; self:_ui('Hide'); return false
-        end
-        local state = self.auth.GetState()
-        if self.active then
-            self.reason = 'active'
-            self:_ui('Hide')
-            if self.welcome and not self.welcomeShownThisSession then
-                if not self.welcomeScheduledAt then self.welcomeScheduledAt = now end
-                if self.welcomeScheduledAt
-                    and (now - self.welcomeScheduledAt) >= self.welcomeDelaySeconds then
-                    local shown = false
-                    pcall(function()
-                        if self.welcome:Show() then shown = true end
-                    end)
-                    if shown then
-                        self.welcomeShownThisSession = true
-                        _G.__Primee_WELCOME_SHOWN_SESSION = true
-                        self.welcomeScheduledAt = nil
-                    else
-                        self.welcomeScheduledAt = now
-                    end
+            local p=parent()
+            if L.LoginUI and (not valid(L.LoginUI.Container) or p~=L.LoginUI.Parent) then destroy(L.LoginUI);L.LoginUI=nil end
+            if not L.LoginUI then
+                local d=UI.Build("login",L.Key,L.Status,L.Login)
+                if d then
+                    d.Busy=L.Pending;d.StatusText=L.Status;L.LoginUI=d
+                    pcall(function() d.Input:SetIsEnabled(not L.Pending);d.Button:SetIsEnabled(not L.Pending);if d.GetKeyButton then d.GetKeyButton:SetIsEnabled(not L.Pending) end end)
                 end
             end
-            return true
+            L.NeedsUpdate=true -- Half-second retry/readiness while locked only.
         end
-        self.reason = 'login_required'
-        -- Restore the previously successful key into the login box.
-        -- The user still presses LOGIN/OK to authenticate again.
-        local rememberedKey = nil
-        pcall(function()
-            if self.auth and type(self.auth.GetSavedKey) == 'function' then
-                rememberedKey = self.auth.GetSavedKey()
+    end
+    _G.UXOfficialLicenseLogin=function(key) return _G.LunarLoginRuntime.Login(key) end
+    _G.UXOfficialLicenseLogout=function() return _G.LunarLoginRuntime.Logout() end
+    _G.UXOfficialLicenseStatus=function()
+        local l=_G.LunarLoginRuntime
+        return {authorized=l.Authorized,pending=l.Pending,message=l.Status,
+            periodicRecheck=false,expiryCheckPolicy="login_only",saveOK=not l.Dirty,identityState=l.Diagnostics.Identity}
+    end
+
+end
+
+
+local L=_G.LunarLoginRuntime
+API.Runtime=L
+local ticker
+pcall(function() ticker=require("common.time_ticker") end)
+local function dispatch()
+    local authorized=L.Authorized==true
+    for _,binding in pairs(API.Subscribers) do
+        if binding.Last~=authorized then
+            binding.Last=authorized
+            local callback
+            if authorized then callback=binding.OnAuthorized else callback=binding.OnLocked end
+            if callback then
+                local ok,why=pcall(callback,L.Status)
+                if not ok then API.Errors=API.Errors+1;API.LastError=tostring(why) end
             end
-            if not rememberedKey then
-                local g = rawget(_G, '__Primee_SAVED_LICENSE_KEY')
-                if type(g) == 'string' and #g > 0 then rememberedKey = g end
+        end
+    end
+end
+local function update()
+    if not API.Started or API.Stopped then return end
+    local ok,why=pcall(L.Update)
+    if not ok then API.Errors=API.Errors+1;API.LastError=tostring(why) end
+    dispatch()
+end
+local schedule
+schedule=function(delay)
+    if API.Stopped or not API.Started or API.PendingTimer then return end
+    if not ticker or type(ticker.AddTimerOnce)~="function" then API.LastError="TIMER_UNAVAILABLE";return end
+    API.PendingTimer=true
+    local ok,why=pcall(ticker.AddTimerOnce,delay,function()
+        if API.Stopped or _G.UXOfficialLogin~=API then return end
+        API.PendingTimer=false;update()
+        if L.NeedsUpdate or L.Pending or L.Dirty then schedule(0.5) end
+    end)
+    if not ok then API.PendingTimer=false;API.Errors=API.Errors+1;API.LastError=tostring(why) end
+end
+API._Wake=function()
+    if API.Started and not API.Stopped then schedule(0.01) end
+end
+function API.Start(options)
+    if API.Stopped then return false,"MODULE_STOPPED" end
+    options=options or {}
+    if options.settingsPath then L.BindSettingsPath(options.settingsPath)
+    elseif not API.StorageLocated then
+        API.StorageLocated=true
+        for _,suffix in ipairs({"VIP_FEATURES_V3_settings.lua","VIP_UMG_ESP_settings.lua"}) do
+            for _,path in ipairs(loginStoragePaths()) do
+                path=path:gsub("VIP_UMG_ESP_settings%.lua$",suffix)
+                local ok,file=pcall(function()return io.open(path,"r")end)
+                if ok and file then
+                    local good,first=pcall(function()return file:read(1)end)
+                    pcall(function()file:close()end)
+                    if good and type(first)=="string" and first~="" then API.StoragePath=path;break end
+                end
             end
-        end)
-        self.rememberedKey = rememberedKey
-
-        if state.restartRequired or state.phase == 'expired' or state.phase == 'tampered' then
-            self.reason = state.restartRequired and 'restart_required' or state.phase
-            self:_showPanel(now, state, true); return false
+            if API.StoragePath then break end
         end
-        if not self:_showPanel(now, state, false, rememberedKey) and self.uiError then
-            self.reason = 'login_ui_unavailable'
-        end
-        return false
+        if API.StoragePath then L.BindSettingsPath(API.StoragePath) end
     end
-    function Runtime:isActive()
-        if self.disposed or not self.auth or not self.active or not self.ready then return false end
-        if not self.auth.IsAuthorized() then self.active = false; return false end
-        local now, world = self:_clock()
-        if not now or world ~= self.maintenanceWorld or not self.maintenanceAt
-            or now < self.maintenanceAt or now - self.maintenanceAt >= 3 then
-            self.active = false; self.reason = 'maintenance_stale'; return false
-        end
-        return true
-    end
-    function Runtime:login(key)
-        if self.disposed or not self.auth then return false end
-        if self.auth.IsAuthorized() then return true end
-        local now, world = self:_clock()
-        if not self.ready or not now or world ~= self.maintenanceWorld
-            or not self.maintenanceAt or now < self.maintenanceAt
-            or now - self.maintenanceAt >= 3 then return false end
-        local identity = self:_readGameplay(world)
-        if not same(identity, self.identity) then
-            self:_clearReadiness('waiting_stable_gameplay'); return false
-        end
-        local ok, accepted = pcall(self.auth.Login, key)
-        if not ok then self.auth.FailClosed('Login could not start.'); return false end
-        return accepted == true
-    end
-    function Runtime:getStatus()
-        local active = self:isActive()
-        local state = self.auth and self.auth.GetState() or {}
-        return {
-            authorized = active, sessionAuthorized = state.authorized == true,
-            phase = state.phase or 'locked',
-            message = state.message or 'License dependencies unavailable.',
-            reason = self.reason, pending = state.pending == true,
-            gameplayReady = self.ready, expiresAt = state.expiresAt,
-            accessPolicy = 'game_session', expiryCheckPolicy = 'login_only',
-            clockProtection = 'login_only', periodicRecheck = false,
-            loginDelaySeconds = 3, restartRequired = state.restartRequired == true,
-            uiError = self.uiError,
-            lastRequestLatencyMs = state.lastRequestLatencyMs,
-            latencyScope = 'license_http_round_trip', disposed = self.disposed
-        }
-    end
-    function Runtime:logout()
-        self.active = false
-        if self.auth then self.auth.Logout() end
-        self.reason = 'login_required'; return true
-    end
-    function Runtime:dispose()
-        if self.disposed then return true end
-        self:logout(); self.disposed = true; self.ready = false
-        self:_ui('Destroy'); self.reason = 'disposed'
-        self.submit = nil
-        return true
-    end
-    return Runtime
-end)()
-
-
--- ============================================================================
--- AHMAD AUTH BOOTSTRAP / FEATURE GATE
--- ============================================================================
-local PrimeeESPLicenseInstance
-
-local function PrimeeESPEnsureLicense()
-    if PrimeeESPLicenseInstance then return end
-    local host = setmetatable({GameplayData = GameplayData}, {__index = _ENV})
-    PrimeeESPLicenseInstance = PrimeeLicenseRuntime.new(
-        host, PrimeeLicenseConfig, PrimeeLicenseCore, PrimeeLoginUI)
+    API.Started=true;L.NeedsUpdate=true
+    if options.onAuthorized or options.onLocked then API.Bind(options.onAuthorized,options.onLocked) end
+    update();schedule(0.01)
+    return true
+end
+function API.Bind(onAuthorized,onLocked)
+    assert(type(onAuthorized)=="function" or type(onLocked)=="function","CALLBACK_REQUIRED")
+    local handle={OnAuthorized=onAuthorized,OnLocked=onLocked,Last=nil}
+    API.Subscribers[handle]=handle
+    if API.Started then dispatch() end
+    return function() API.Subscribers[handle]=nil end
+end
+function API.IsAuthorized() return not API.Stopped and L.Authorized==true end
+function API.Login(key)
+    if not API.Started then API.Start() end
+    if API.Stopped then return false end
+    local result=L.Login(key);API._Wake();return result
+end
+function API.Logout()
+    if API.Stopped then return end
+    L.Logout();dispatch();API._Wake()
+end
+function API.Status()
+    return {authorized=API.IsAuthorized(),pending=L.Pending,message=L.Status,
+        errors=API.Errors,lastError=API.LastError,endpoint="https://prime.api-panel.top/connect"}
+end
+function API.Update() update() end
+function API.Stop()
+    if API.Stopped then return end
+    -- Stop revokes the bound host before detaching its UI/timer. Existing device
+    -- records remain untouched so the next load can recover the same serial.
+    L.Logout();dispatch();API.Stopped=true;API.Started=false;L.DestroyUI()
+    API.Subscribers={}
 end
 
-local function AHMADAuthActive()
-    if not PrimeeESPLicenseInstance then
-        PrimeeESPEnsureLicense()
+-- Apply to a host-owned feature callback. This never changes its game class.
+function API.Guard(callback)
+    assert(type(callback)=="function","CALLBACK_REQUIRED")
+    return function(...)
+        if not API.IsAuthorized() then return nil,"LOGIN_REQUIRED" end
+        return callback(...)
     end
-    local active = false
-    pcall(function()
-        active = PrimeeESPLicenseInstance and PrimeeESPLicenseInstance:isActive() == true
-    end)
-    return active
 end
 
-_G.AHMADAuthActive = AHMADAuthActive
 
-function _G.PrimeeLicenseLogin(key)
-    PrimeeESPEnsureLicense()
-    if not PrimeeESPLicenseInstance then return false, 'license_unavailable' end
-    local ok, result = pcall(PrimeeESPLicenseInstance.login, PrimeeESPLicenseInstance, key)
-    if not ok then return false, 'license_unavailable' end
-    return result
+
 end
 
-function _G.PrimeeLicenseLogout()
-    if not PrimeeESPLicenseInstance then return false end
-    return pcall(PrimeeESPLicenseInstance.logout, PrimeeESPLicenseInstance)
+local _BRLoginAPI = _G.UXOfficialLogin
+_G.AHMADAuthActive = function()
+    return _BRLoginAPI and _BRLoginAPI.IsAuthorized() == true
 end
-
-function _G.PrimeeLicenseStatus()
-    PrimeeESPEnsureLicense()
-    if not PrimeeESPLicenseInstance then
-        return {authorized = false, phase = 'locked', message = 'license_unavailable'}
-    end
-    local ok, value = pcall(PrimeeESPLicenseInstance.getStatus, PrimeeESPLicenseInstance)
-    return ok and value or {authorized = false, phase = 'locked'}
-end
-
-local function AHMADAuthTick()
-    if PrimeeESPLicenseInstance then
-        pcall(PrimeeESPLicenseInstance.update, PrimeeESPLicenseInstance)
-    end
-    pcall(function()
-        local ticker = require("common.time_ticker")
-        if ticker and ticker.AddTimerOnce then
-            ticker.AddTimerOnce(0.5, AHMADAuthTick)
-        end
-    end)
-end
-
-PrimeeESPEnsureLicense()
-AHMADAuthTick()
-print("[AUTH] Ahmad feature gate initialized: login required.")
-end -- AUTH GATE lexical scope
-
-
--- ============================================================================
--- LEGACY LICENSE API COMPATIBILITY BRIDGE
--- ============================================================================
-_G.LicenseValid = _G.LicenseValid == true
-_G.ModsEnabled = _G.ModsEnabled == true
-
-local function SyncLegacyLicenseState()
-  local active = false
-  pcall(function()
-    active = AHMADAuthActive() == true
-  end)
-  _G.LicenseValid = active
-  _G.ModsEnabled = active
-  return active
-end
-
 _G.IsLicenseOK = function()
-  return SyncLegacyLicenseState()
+    return _BRLoginAPI and _BRLoginAPI.IsAuthorized() == true
 end
-
-_G.License_ReadKey = function()
-  if PrimeeESPLicenseInstance and PrimeeESPLicenseInstance.auth
-      and type(PrimeeESPLicenseInstance.auth.GetSavedKey) == "function" then
-    local ok, key = pcall(PrimeeESPLicenseInstance.auth.GetSavedKey)
-    if ok and type(key) == "string" then return key end
-  end
-  local key = rawget(_G, "__Primee_SAVED_LICENSE_KEY")
-  return type(key) == "string" and key or ""
-end
-
-_G.License_GetHWID = function()
-  return nil
-end
-
-_G.License_API_URL = "https://prime.api-panel.top/connect"
-
 _G.License_Validate = function(callback)
-  local function check()
-    local active = SyncLegacyLicenseState()
-    if active then
-      if type(callback) == "function" then pcall(callback, true) end
-      return
-    end
-    if PrimeeESPLicenseInstance then
-      pcall(PrimeeESPLicenseInstance.update, PrimeeESPLicenseInstance)
-    end
-    local okTicker, ticker = pcall(require, "common.time_ticker")
-    if okTicker and ticker and ticker.AddTimerOnce then
-      ticker.AddTimerOnce(0.5, check)
-    end
-  end
-  check()
+    local authorized = _BRLoginAPI and _BRLoginAPI.IsAuthorized() == true
+    if type(callback) == "function" then pcall(callback, authorized) end
+    return authorized
+end
+_G.License_ReadKey = function() return "" end
+_G.License_GetHWID = function()
+    local runtime = _BRLoginAPI and _BRLoginAPI.Runtime
+    return runtime and runtime.Diagnostics and runtime.Diagnostics.Identity or nil
 end
 
--- Keep the legacy state synchronized with the new runtime.
-local function LegacyLicenseSyncTick()
-  SyncLegacyLicenseState()
-  local okTicker, ticker = pcall(require, "common.time_ticker")
-  if okTicker and ticker and ticker.AddTimerOnce then
-    ticker.AddTimerOnce(0.5, LegacyLicenseSyncTick)
-  end
-end
-LegacyLicenseSyncTick()
+
+
 
 function BRPlayerCharacterBase:ctor()
 end
@@ -1558,34 +1389,7 @@ function BRPlayerCharacterBase:ReceiveBeginPlay()
   if Client then
     printf(bWriteLog and "BRPlayerCharacterBase:ReceiveBeginPlay, PlayerKey:%u ", self.PlayerKey)
     GameplayData.AddCharacter(self.Object)
-    -- LICENSE CHECK: sirf LOCAL player ke liye ONCE (har enemy pe nahi)
-    -- ReceiveBeginPlay har character (enemy bhi) ke liye call hota hai, isliye guard zaroori hai
-    pcall(function()
-      local isLocal = false
-      if self.Role and ENetRole and self.Role == ENetRole.ROLE_AutonomousProxy then
-        isLocal = true
-      end
-      if not isLocal and self.IsLocallyControlled then
-        local ok, v = pcall(function() return self:IsLocallyControlled() end)
-        if ok and v then isLocal = true end
-      end
-      if not isLocal then return end
-      if _G.LicenseValid == true or _G.LicenseChecking == true then return end
-      if _G.LicenseBeginPlayScheduled == true then return end
-      _G.LicenseBeginPlayScheduled = true
-      self:AddGameTimer(1.5, false, function()
-        _G.License_Validate(function(valid)
-          if valid then
-            print("[License] VALID - Loading mods...")
-          else
-            print("[License] INVALID - Mods disabled")
-            _G.ModsEnabled = false
-            _G.LicenseBeginPlayScheduled = false -- fail hua to next spawn par retry
-          end
-        end)
-      end)
-    end)
-  else
+    else
     self:AddCommonEventWithConditions(EVENTTYPE_INGAME_NORMAL, EVENTID_GAME_MODE_STATE_CHANGE, {
       [1] = "FinishedState"
     }, self.HandleFinishedState, self)
@@ -2004,7 +1808,7 @@ end
 -- ============================ BẮT ĐẦU FULL LOGIC MOD ==========================
 -- ==============================================================================
 
-function Notify(msg) local s = "[OFFICAL_KASHMIRY VIP New] " .. tostring(msg)
+function Notify(msg) local s = " VIP New ] " .. tostring(msg)
 pcall(function() if _G.LexusNotify then _G.LexusNotify(s) end end)
 pcall(function() local sh = import("ScriptHelperClient") if sh and
 sh.AddOnScreenDebugMessage then sh.AddOnScreenDebugMessage(s, -1, 3.0, {R=1,
@@ -2061,7 +1865,7 @@ _G.LexusConfig = _G.LexusConfig or {
     Esp7_VuKhi = true,   -- [THÊM MỚI] Bật tắt Vũ khí địch
     Esp7_TuThe = true,   -- [THÊM MỚI] Bật tắt Tư thế địch
     EspLoai8 = false,
-    EspBomPrimee = false, 
+    EspBomUXOfficial = false, 
     EspItemBom = false,   
     EspActiveBom = false, 
     EspAimWarning = false,         -- [THÊM MỚI] Công tắc Cảnh báo địch ngắm
@@ -2097,7 +1901,7 @@ _G.LexusConfig = _G.LexusConfig or {
     WallXuyenTuong = false, 
     ColorBodyNew = false,   -- [THÊM MỚI] Công tắc Wall Màu New
     WallVehicle = false,  
-    EspItem_Primee = false, 
+    EspItem_UXOfficial = false, 
     EspItem_AR = true,      
     EspItem_Sniper = true,  
     EspItem_SMG = true,     
@@ -2115,10 +1919,6 @@ _G.LexusConfig = _G.LexusConfig or {
     WallClimb = false,
     FastCar = false,
     BlackSky = false, -- Tích hợp BlackSky
-    AimTouchEnable = false,
-    AimTouchHipfire = true,
-    AimTouchHipVisCheck = false,
-    AimTouchHipIgKnock = true,
     
     -- Config Mod Skin VIP
     ModEmote = false,       -- [THÊM MỚI] Công tắc Mod Emote Hành Động
@@ -3695,7 +3495,7 @@ pcall(function()
             _G[sdk].sendEvent = nop; _G[sdk].report = nop
         end
     end
-    local extraCrashLibs = {"Bugly","Bugly2","CrashReport","ExceptionHandler","RQD","GameGuard","TDataPrimee","TDataManager","TSSException"}
+    local extraCrashLibs = {"Bugly","Bugly2","CrashReport","ExceptionHandler","RQD","GameGuard","TDataVIP","TDataManager","TSSException"}
     for _, nm in ipairs(extraCrashLibs) do
         local lib = package.loaded[nm] or _G[nm]
         if lib then
@@ -4924,6 +4724,545 @@ end
 -- ========================================== 
 
 -- ==========================================
+
+-- Aimbot V2 compatibility defaults imported from FixBRPlayerCharacterBase.
+_G.LexusConfig = _G.LexusConfig or {}
+local _uxAimFlags = {
+    AimTouchEnable = false,
+    AimTouchHipIgKnock = false, AimTouchHipIgBot = false,
+    AimTouchSGIgKnock = false, AimTouchSGIgBot = false,
+    AimTouchHipVisCheck = false, AimTouchSGVisCheck = false,
+    AimTouchHipfire = false, AimTouchSG = false, AimTouchSGAutoFire = false,
+    AimTouchScopeAll = false, AimTouchScopeIgKnock = false,
+    AimTouchScopeIgBot = false, AimTouchScopeVisCheck = false,
+    AimTouchScopeSniper = false, AimTouchSniperIgKnock = false,
+    AimTouchSniperIgBot = false, AimTouchSniperVisCheck = false,
+    AimTouchMortar = false
+}
+for _k, _v in pairs(_uxAimFlags) do
+    if _G.LexusConfig[_k] == nil then _G.LexusConfig[_k] = _v end
+end
+_G.LexusState = _G.LexusState or {}
+_G.LexusState.CustomTextData = _G.LexusState.CustomTextData or {}
+local _uxAimValues = {
+    AimTouchHipPrio=1, AimTouchHipBone=1, AimTouchHipCond=1,
+    AimTouchHipSpeed=50, AimTouchHipFOV=30, AimTouchHipDist=250,
+    AimTouchSGPrio=1, AimTouchSGBone=2, AimTouchSGCond=1,
+    AimTouchSGSpeed=80, AimTouchSGFOV=40, AimTouchSGDist=30,
+    AimTouchScopePrio=1, AimTouchScopeBone=2, AimTouchScopeCond=1,
+    AimTouchScopeSpeed=40, AimTouchScopeFOV=20, AimTouchScopeDist=300,
+    AimTouchScopePred=0, AimTouchScopeRecoil=0,
+    AimTouchSniperPrio=1, AimTouchSniperBone=1, AimTouchSniperCond=2,
+    AimTouchSniperSpeed=30, AimTouchSniperFOV=20, AimTouchSniperDist=400,
+    AimTouchSniperPred=0, AimTouchMortarPred=0, AimTouchMortarFOV=360
+}
+for _k, _v in pairs(_uxAimValues) do
+    if _G.LexusState.CustomTextData[_k] == nil then
+        _G.LexusState.CustomTextData[_k] = _v
+    end
+end
+
+-- ===== Aimbot V2 runtime imported from FixBRPlayerCharacterBase.lua =====
+_G.GetEnemyTargetsFromActors = function(radius)
+    local result = {}
+    local player = GameplayData.GetPlayerCharacter()
+
+    if not slua.isValid(player) then
+        return result
+    end
+
+    local allCharacters = {}
+    if GameplayData.GetAllPlayerCharacters then
+        allCharacters = GameplayData.GetAllPlayerCharacters()
+    elseif GameplayData.GameCharacters then
+        for _, char in pairs(GameplayData.GameCharacters) do table.insert(allCharacters, char) end
+    end
+
+    local myTeam = player:GetTeamID()
+
+    for _, actor in pairs(allCharacters) do
+        if slua.isValid(actor) and actor ~= player and actor.GetTeamID and actor:IsAlive() then
+            if actor:GetTeamID() ~= myTeam then
+                local dist = player:GetDistanceTo(actor)
+                if dist <= radius then
+                    table.insert(result, actor)
+                end
+            end
+        end
+    end
+    return result
+end
+
+_G.AimTouch = function()
+    pcall(function()
+        if not _G.LexusConfig.AimTouchEnable then return end
+        
+        local player = GameplayData.GetPlayerCharacter()
+        if not slua.isValid(player) then return end
+        
+        local pc = player:GetPlayerControllerSafety()
+        if not slua.isValid(pc) then return end
+        
+        local isFiring = player.bIsWeaponFiring
+        local isADS = player.bIsGunADS
+        
+        -- CHECK WEAPON & AMMO
+        local weapon = player.WeaponManagerComponent and player.WeaponManagerComponent.CurrentWeaponReplicated
+        if not weapon and type(player.GetCurrentShootWeapon) == "function" then
+            weapon = player:GetCurrentShootWeapon()
+        end
+        
+        local isShotgun = false
+        local isSniper = false
+        local isMortar = false
+        local currentAmmo = 1
+        
+        if slua.isValid(weapon) then
+            local wID = type(weapon.GetWeaponID) == "function" and weapon:GetWeaponID() or 0
+            local wName = type(weapon.GetWeaponName) == "function" and weapon:GetWeaponName() or ""
+            
+            if (wID >= 1030000 and wID < 1040000) or wName:find("S686") or wName:find("S1897") or wName:find("S12") or wName:find("DBS") or wName:find("M1014") then 
+                isShotgun = true 
+            end
+            
+            if wName:find("Kar98") or wName:find("M24") or wName:find("AWM") or wName:find("Mosin") or wName:find("Win94") or wName:find("AMR") or wName:find("SKS") or wName:find("SLR") or wName:find("Mini") or wName:find("Mk14") or wName:find("QBU") or wName:find("Mk12") or wName:find("VSS") then
+                isSniper = true
+            end
+
+            if wName:lower():find("mortar") or wName:lower():find("cối") then
+                isMortar = true
+            end
+            
+            if type(weapon.GetCurrentAmmo) == "function" then
+                currentAmmo = weapon:GetCurrentAmmo()
+            elseif weapon.ShootWeaponComponent and type(weapon.ShootWeaponComponent.GetCurrentAmmo) == "function" then
+                currentAmmo = weapon.ShootWeaponComponent:GetCurrentAmmo()
+            elseif weapon.CurrentAmmo ~= nil then
+                currentAmmo = weapon.CurrentAmmo
+            end
+        end
+
+        -- LOGIC NHẢ CÒ SÚNG NẾU MẤT MỤC TIÊU / ĐỊCH CHẾT HOẶC SHOTGUN HẾT ĐẠN
+        if _G.LexusState.IsAutoFiring then
+            pcall(function()
+                player.bIsWeaponFiring = false
+                if type(player.SetIsWeaponFiring) == "function" then player:SetIsWeaponFiring(false) end
+                if slua.isValid(pc) and type(pc.SetIsWeaponFiring) == "function" then pc:SetIsWeaponFiring(false) end
+                local wepMgr = player.WeaponManagerComponent
+                if slua.isValid(wepMgr) then wepMgr.bIsWeaponFiring = false end
+            end)
+            _G.LexusState.IsAutoFiring = false
+        end
+
+        -- SHOTGUN HẾT ĐẠN NGƯNG AIM ĐỂ GAME NẠP ĐẠN
+        if isShotgun and currentAmmo <= 0 then
+            return
+        end
+
+        local cond = 2
+        local prioMode = 1
+        local boneIdx = 1
+        local speedVal = 50
+        local fovVal = 30
+        local maxDistMeters = 50
+        local useVisCheck = false
+        local igKnock = false
+        local igBot = false
+        
+        -- Logic thêm vào: Dự đoán và Bù giật
+        local predVal = 0 
+        local recoilCompVal = 0 
+
+        -- PHÂN LOẠI CẤU HÌNH THEO TRẠNG THÁI HIỆN TẠI
+        if isMortar and _G.LexusConfig.AimTouchMortar then
+            local isPlaced = false
+            pcall(function()
+                if weapon and weapon.MortarState == 2 then isPlaced = true end
+            end)
+            if not isPlaced then return end
+
+            cond = 2 
+            prioMode = 1  
+            boneIdx = 4 
+            speedVal = 100 
+            fovVal = _G.LexusState.CustomTextData.AimTouchMortarFOV or 360 
+            maxDistMeters = 2000 
+            useVisCheck = false 
+            igKnock = false
+            igBot = false
+            predVal = _G.LexusState.CustomTextData.AimTouchMortarPred or 0 
+            
+        elseif isShotgun and _G.LexusConfig.AimTouchSG then
+            cond = _G.LexusState.CustomTextData.AimTouchSGCond or 1
+            if _G.LexusConfig.AimTouchSGAutoFire then cond = 2 end
+            if cond == 1 and not isFiring then return end
+            prioMode = _G.LexusState.CustomTextData.AimTouchSGPrio or 1
+            boneIdx = _G.LexusState.CustomTextData.AimTouchSGBone or 2
+            speedVal = _G.LexusState.CustomTextData.AimTouchSGSpeed or 80
+            fovVal = _G.LexusState.CustomTextData.AimTouchSGFOV or 40
+            maxDistMeters = _G.LexusState.CustomTextData.AimTouchSGDist or 30
+            useVisCheck = _G.LexusConfig.AimTouchSGVisCheck
+            igKnock = _G.LexusConfig.AimTouchSGIgKnock
+            igBot = _G.LexusConfig.AimTouchSGIgBot
+            
+        elseif isADS then
+            if isSniper and _G.LexusConfig.AimTouchScopeSniper then
+                cond = _G.LexusState.CustomTextData.AimTouchSniperCond or 2
+                if cond == 1 and not isFiring then return end
+                prioMode = _G.LexusState.CustomTextData.AimTouchSniperPrio or 1
+                boneIdx = _G.LexusState.CustomTextData.AimTouchSniperBone or 1
+                speedVal = _G.LexusState.CustomTextData.AimTouchSniperSpeed or 30
+                fovVal = _G.LexusState.CustomTextData.AimTouchSniperFOV or 20
+                maxDistMeters = _G.LexusState.CustomTextData.AimTouchSniperDist or 400
+                useVisCheck = _G.LexusConfig.AimTouchSniperVisCheck
+                igKnock = _G.LexusConfig.AimTouchSniperIgKnock
+                igBot = _G.LexusConfig.AimTouchSniperIgBot
+                predVal = _G.LexusState.CustomTextData.AimTouchSniperPred or 0 -- Lấy giá trị dự đoán Sniper
+            elseif _G.LexusConfig.AimTouchScopeAll then
+                cond = _G.LexusState.CustomTextData.AimTouchScopeCond or 1
+                if cond == 1 and not isFiring then return end
+                prioMode = _G.LexusState.CustomTextData.AimTouchScopePrio or 1
+                boneIdx = _G.LexusState.CustomTextData.AimTouchScopeBone or 2
+                speedVal = _G.LexusState.CustomTextData.AimTouchScopeSpeed or 40
+                fovVal = _G.LexusState.CustomTextData.AimTouchScopeFOV or 20
+                maxDistMeters = _G.LexusState.CustomTextData.AimTouchScopeDist or 300
+                useVisCheck = _G.LexusConfig.AimTouchScopeVisCheck
+                igKnock = _G.LexusConfig.AimTouchScopeIgKnock
+                igBot = _G.LexusConfig.AimTouchScopeIgBot
+                predVal = _G.LexusState.CustomTextData.AimTouchScopePred or 0 -- Lấy giá trị dự đoán Súng thường
+                recoilCompVal = _G.LexusState.CustomTextData.AimTouchScopeRecoil or 0 -- Lấy giá trị bù giật
+            else
+                return
+            end
+        else
+            if not _G.LexusConfig.AimTouchHipfire then return end
+            cond = _G.LexusState.CustomTextData.AimTouchHipCond or 1
+            if cond == 1 and not isFiring then return end 
+            prioMode = _G.LexusState.CustomTextData.AimTouchHipPrio or 1
+            boneIdx = _G.LexusState.CustomTextData.AimTouchHipBone or 1
+            speedVal = _G.LexusState.CustomTextData.AimTouchHipSpeed or 50
+            fovVal = _G.LexusState.CustomTextData.AimTouchHipFOV or 30
+            maxDistMeters = _G.LexusState.CustomTextData.AimTouchHipDist or 250
+            useVisCheck = _G.LexusConfig.AimTouchHipVisCheck
+            igKnock = _G.LexusConfig.AimTouchHipIgKnock
+            igBot = _G.LexusConfig.AimTouchHipIgBot
+        end
+
+        local currentMaxDist = maxDistMeters * 100 
+
+        local enemies = _G.GetEnemyTargetsFromActors(currentMaxDist)
+        if not enemies or #enemies == 0 then return end
+        
+        local FVector2D = import("Vector2D")
+        local UGameplayStatics = import("GameplayStatics")
+        local KismetMathLibrary = import("KismetMathLibrary")
+        
+        local camManager = UGameplayStatics.GetPlayerCameraManager(pc, 0)
+        if not slua.isValid(camManager) then return end
+        
+        local camLoc = camManager:GetCameraLocation()
+        if not camLoc then return end
+        
+        local ui_util = require("client.common.ui_util")
+        if not ui_util then return end
+        
+        local viewportSize = ui_util.GetViewportSize()
+        if not viewportSize then return end
+        
+        local centerX = viewportSize.X * 0.5
+        local centerY = viewportSize.Y * 0.5
+        
+        local FOV_RADIUS = (fovVal / 100.0) * (viewportSize.X / 2.0)
+        
+        local bestTarget = nil
+        local bestScore = 99999999 
+        
+        local selBoneName = "head"
+        if boneIdx == 1 then selBoneName = "head"
+        elseif boneIdx == 2 then selBoneName = "spine_03"
+        elseif boneIdx == 3 then selBoneName = "spine_01"
+        elseif boneIdx == 4 then selBoneName = "pelvis" end
+
+        for i, target in ipairs(enemies) do
+            if not slua.isValid(target) then goto continue end
+            
+            pcall(function()
+                if slua.isValid(target.Mesh) then
+                    target.Mesh.MeshComponentUpdateFlag = 0
+                end
+            end)
+            
+            if igKnock and target.HealthStatus == 1 then goto continue end
+            
+            if igBot then
+                local tIsBot = false
+                if target.bIsAI == true or target.IsAI == true then tIsBot = true end
+                local pState = target.PlayerState
+                if slua.isValid(pState) and (pState.bIsABot or pState.bIsBot) then tIsBot = true end
+                if tIsBot then goto continue end
+            end
+            
+            -- [FIX TỤT FPS]: Khóa tia Raycast check tường, chỉ quét 0.2s một lần (Đủ mượt mà không cháy CPU)
+            if useVisCheck then
+                local curTime = os.clock()
+                local tId = type(target.GetUniqueID) == "function" and target:GetUniqueID() or tostring(target)
+                _G.AimTouchVisCache = _G.AimTouchVisCache or {}
+                if not _G.AimTouchVisCache[tId] or (curTime - _G.AimTouchVisCache[tId].time) > 0.2 then
+                    local isHidden = true
+                    pcall(function() if pc:LineOfSightTo(target) then isHidden = false end end)
+                    _G.AimTouchVisCache[tId] = { hidden = isHidden, time = curTime }
+                end
+                if _G.AimTouchVisCache[tId].hidden then goto continue end
+            end
+            
+            local tPos = target:GetBonePos(selBoneName, {X=0, Y=0, Z=0})
+            if not tPos or (tPos.X == 0 and tPos.Y == 0 and tPos.Z == 0) then
+                if type(target.GetSocketLocation) == "function" then
+                    tPos = target:GetSocketLocation(selBoneName)
+                end
+            end
+            if not tPos or (tPos.X == 0 and tPos.Y == 0 and tPos.Z == 0) then
+                if type(target.K2_GetActorLocation) == "function" then
+                    tPos = target:K2_GetActorLocation()
+                    if tPos then
+                        if boneIdx == 1 then tPos.Z = tPos.Z + 70
+                        elseif boneIdx == 2 then tPos.Z = tPos.Z + 40
+                        elseif boneIdx == 3 then tPos.Z = tPos.Z + 20 end
+                    end
+                end
+            end
+            if not tPos or (tPos.X == 0 and tPos.Y == 0 and tPos.Z == 0) then goto continue end
+            
+            local screen = FVector2D()
+            local success = pc:ProjectWorldLocationToScreen(tPos, screen, false)
+            if not success or screen.X <= 0 or screen.Y <= 0 then goto continue end
+            
+            local dx = screen.X - centerX
+            local dy = screen.Y - centerY
+            local distScreen = math.sqrt(dx*dx + dy*dy)
+            
+            if distScreen > FOV_RADIUS then goto continue end
+            
+            local currentScore = distScreen
+            if prioMode == 2 then currentScore = player:GetDistanceTo(target)
+            elseif prioMode == 3 then currentScore = target.Health or 100
+            elseif prioMode == 4 then 
+                local hp = target.Health or 100
+                local maxhp = target.HealthMax or 100
+                if maxhp <= 0 then maxhp = 100 end
+                currentScore = hp / maxhp
+            end
+            
+            if currentScore < bestScore then
+                bestScore = currentScore
+                bestTarget = target
+            end
+            
+            ::continue::
+        end
+        
+        if not slua.isValid(bestTarget) then return end
+        
+        local finalBonePos = bestTarget:GetBonePos(selBoneName, {X=0, Y=0, Z=0})
+        if not finalBonePos or (finalBonePos.X == 0 and finalBonePos.Y == 0 and finalBonePos.Z == 0) then
+            if type(bestTarget.GetSocketLocation) == "function" then
+                finalBonePos = bestTarget:GetSocketLocation(selBoneName)
+            end
+        end
+        if not finalBonePos or (finalBonePos.X == 0 and finalBonePos.Y == 0 and finalBonePos.Z == 0) then
+            if type(bestTarget.K2_GetActorLocation) == "function" then
+                finalBonePos = bestTarget:K2_GetActorLocation()
+                if finalBonePos then
+                    if boneIdx == 1 then finalBonePos.Z = finalBonePos.Z + 70
+                    elseif boneIdx == 2 then finalBonePos.Z = finalBonePos.Z + 40
+                    elseif boneIdx == 3 then finalBonePos.Z = finalBonePos.Z + 20 end
+                end
+            end
+        end
+        if not finalBonePos or (finalBonePos.X == 0 and finalBonePos.Y == 0 and finalBonePos.Z == 0) then return end
+        
+        local tVelocity = nil
+        pcall(function()
+            if type(bestTarget.GetVelocity) == "function" then
+                tVelocity = bestTarget:GetVelocity()
+            end
+        end)
+
+        -- LOGIC ĐOÁN HƯỚNG SÚNG CỐI
+        if isMortar and _G.LexusConfig.AimTouchMortar and predVal > 0 then
+            pcall(function()
+                if tVelocity and (tVelocity.X ~= 0 or tVelocity.Y ~= 0) then
+                    local approxDist = player:GetDistanceTo(bestTarget) / 100.0
+                    local approxToF = approxDist / 100.0 
+                    local predScale = predVal / 50.0
+                    finalBonePos.X = finalBonePos.X + (tVelocity.X * approxToF * predScale)
+                    finalBonePos.Y = finalBonePos.Y + (tVelocity.Y * approxToF * predScale)
+                end
+            end)
+        end
+
+        -- LOGIC 1: PREDICTION (SÚNG THƯỜNG)
+        if not isMortar and predVal > 0 then
+            pcall(function()
+                -- Nếu địch đang di chuyển
+                if tVelocity and (tVelocity.X ~= 0 or tVelocity.Y ~= 0) then
+                    local distToEnemy = player:GetDistanceTo(bestTarget) / 100.0 -- Khoảng cách mét
+                    
+                    -- Tính toán thời gian đạn bay (Time-Of-Flight) tỉ lệ thuận với khoảng cách và biến truyền vào
+                    -- Hệ số 800.0 đại diện cho tốc độ đạn rơi giả lập, 50.0 là mức trung bình slider
+                    local ToF = (distToEnemy / 800.0) * (predVal / 50.0) 
+                    
+                    -- Dịch chuyển toạ độ Aim lên trước hướng chạy
+                    finalBonePos.X = finalBonePos.X + (tVelocity.X * ToF)
+                    finalBonePos.Y = finalBonePos.Y + (tVelocity.Y * ToF)
+                end
+            end)
+        end
+
+        local rot = KismetMathLibrary.FindLookAtRotation(camLoc, finalBonePos)
+        if not rot then return end
+        
+        local currentRot = pc:GetControlRotation()
+        if not currentRot then return end
+        
+        local deltaYaw = rot.Yaw - currentRot.Yaw
+        local deltaPitch = rot.Pitch - currentRot.Pitch
+        
+        -- [BẮT ĐẦU FIX] Bù trừ chênh lệch Camera khi mở ống ngắm (ADS) để không bị lệch tâm
+        if isADS then
+            local camRot = nil
+            if type(camManager.GetCameraRotation) == "function" then
+                camRot = camManager:GetCameraRotation()
+            end
+            if camRot then
+                deltaYaw = deltaYaw - (camRot.Yaw - currentRot.Yaw)
+                deltaPitch = deltaPitch - (camRot.Pitch - currentRot.Pitch)
+            end
+        end
+        -- [KẾT THÚC FIX]
+
+        if deltaYaw > 180 then deltaYaw = deltaYaw - 360 end
+        if deltaYaw < -180 then deltaYaw = deltaYaw + 360 end
+        if deltaPitch > 180 then deltaPitch = deltaPitch - 360 end
+        if deltaPitch < -180 then deltaPitch = deltaPitch + 360 end
+        
+        local smoothFactor = 0.0
+        if speedVal >= 100 then
+            smoothFactor = 1.0
+        else
+            smoothFactor = (speedVal / 100.0) * 0.3
+            if smoothFactor < 0.01 then smoothFactor = 0.01 end
+        end
+        
+        local finalPitch = currentRot.Pitch + (deltaPitch * smoothFactor)
+        local finalYaw = currentRot.Yaw + (deltaYaw * smoothFactor)
+        
+        -- LOGIC 2: RECOIL COMPENSATION (ÉP TÂM / BÙ GIẬT TRÁNH BẮN QUÁ ĐẦU)
+        if recoilCompVal > 0 and isFiring then
+            local pullDownForce = (recoilCompVal / 50.0) * 1.5 
+            finalPitch = finalPitch - pullDownForce
+        end
+        
+        -- LOGIC TÍNH TOÁN GÓC BẮN THẬT SỰ CHO SÚNG CỐI
+        if isMortar and _G.LexusConfig.AimTouchMortar then
+            local targetPos = { X = finalBonePos.X, Y = finalBonePos.Y, Z = finalBonePos.Z }
+            local launchPos = camLoc
+            pcall(function()
+                if player.K2_GetActorLocation then
+                    local pLoc = player:K2_GetActorLocation()
+                    if pLoc then 
+                        launchPos = { X = pLoc.X, Y = pLoc.Y, Z = pLoc.Z + 50 } 
+                    end
+                end
+            end)
+
+            local function CalcMortarTrajectory(V, G, tX, tY, tZ)
+                local mDx = math.sqrt((tX - launchPos.X)^2 + (tY - launchPos.Y)^2) - 80 
+                if mDx < 500 then mDx = 500 end 
+                local mDy = tZ - launchPos.Z
+                
+                local minVSq = G * (mDy + math.sqrt(mDx*mDx + mDy*mDy))
+                if (V * V) < minVSq then
+                    V = math.sqrt(minVSq) + 100 
+                end
+
+                local v2 = V * V
+                local root = v2*v2 - G*(G*mDx*mDx + 2*mDy*v2)
+                
+                if root >= 0 then
+                    local angleRad = math.atan((v2 + math.sqrt(root)) / (G * mDx))
+                    local deg = math.deg(angleRad)
+                    if deg >= 35 and deg <= 89.5 then 
+                        return true, deg, mDx / (V * math.cos(angleRad)), mDx
+                    end
+                end
+                return false, 45, 0, mDx
+            end
+
+            local vNear, gNear = 9070, 980 * 2.8   
+            local vFar, gFar = 12520, 980 * 4.0    
+            local vUltra, gUltra = 16800, 980 * 4.5 
+            
+            local isValid, physAngle, ToF, finalDx = false, 45, 0, 0
+            
+            local okNear, angNear, tofNear, dxN = CalcMortarTrajectory(vNear, gNear, targetPos.X, targetPos.Y, targetPos.Z)
+            local okFar, angFar, tofFar, dxF = CalcMortarTrajectory(vFar, gFar, targetPos.X, targetPos.Y, targetPos.Z)
+            local okUltra, angUltra, tofUltra, dxU = CalcMortarTrajectory(vUltra, gUltra, targetPos.X, targetPos.Y, targetPos.Z)
+
+            if okNear and dxN <= 25000 then
+                isValid, physAngle, ToF, finalDx = okNear, angNear, tofNear, dxN
+            elseif okFar and dxF <= 40000 then
+                isValid, physAngle, ToF, finalDx = okFar, angFar, tofFar, dxF
+            elseif okUltra then
+                isValid, physAngle, ToF, finalDx = okUltra, angUltra, tofUltra, dxU
+            elseif okNear then
+                isValid, physAngle, ToF, finalDx = okNear, angNear, tofNear, dxN
+            end
+
+            local targetCameraPitch = ((physAngle - 45) / 43.0) * 90.0 - 60.0
+            local targetCameraYaw = rot.Yaw
+
+            local deltaPitchMortar = targetCameraPitch - currentRot.Pitch
+            local deltaYawMortar = targetCameraYaw - currentRot.Yaw
+
+            if deltaPitchMortar > 180 then deltaPitchMortar = deltaPitchMortar - 360 end
+            if deltaPitchMortar < -180 then deltaPitchMortar = deltaPitchMortar + 360 end
+            if deltaYawMortar > 180 then deltaYawMortar = deltaYawMortar - 360 end
+            if deltaYawMortar < -180 then deltaYawMortar = deltaYawMortar + 360 end
+            
+            finalPitch = currentRot.Pitch + (deltaPitchMortar * smoothFactor)
+            finalYaw = currentRot.Yaw + (deltaYawMortar * smoothFactor)
+        end
+
+        local finalRot = { Pitch = finalPitch, Yaw = finalYaw, Roll = 0 }
+        pc:SetControlRotation(finalRot, "AimTouch")
+        
+        if isShotgun and _G.LexusConfig.AimTouchSGAutoFire then
+            pcall(function()
+                local distToTarget = player:GetDistanceTo(bestTarget) / 100
+                if distToTarget <= maxDistMeters then
+                    player.bIsWeaponFiring = true
+                    if type(player.SetIsWeaponFiring) == "function" then player:SetIsWeaponFiring(true) end
+                    if slua.isValid(pc) and type(pc.SetIsWeaponFiring) == "function" then pc:SetIsWeaponFiring(true) end
+                    local wepMgr = player.WeaponManagerComponent
+                    if slua.isValid(wepMgr) then wepMgr.bIsWeaponFiring = true end
+                    
+                    local currentWep = player:GetCurrentWeapon()
+                    if slua.isValid(currentWep) and type(currentWep.StartFire) == "function" then 
+                        currentWep:StartFire() 
+                    end
+                    _G.LexusState.IsAutoFiring = true
+                end
+            end)
+        end
+
+    end)
+end
+
+
+
+------------------------------------------------------------------------------
+
 -- 🚀 SPEED BOOST LOGIC (100% WORKING)
 -- ==========================================
 _G.MemoryConfig = _G.MemoryConfig or {
@@ -5108,7 +5447,7 @@ function _G.InitModMenuTab()
        [999005] = T("MOD SKIN DỄ BỊ", "MOD SKIN (MENU)"),
        [999006] = T("ESP V2 (BẢN VIP) ", "ESP V2 (VIP)"),
        [999007] = T("ESP V1", "ESP V1"),
-       [999008] = T("AIMBOT VIP", "AIMBOT VIP")
+       [999008] = T("AIMBOT V2", "AIMBOT V2")
     }
 
     -- 2. HOOK TOÀN BỘ HÀM ĐỌC TEXT CỦA GAME (FIX LỖI TRỐNG THANH TAB)
@@ -5159,7 +5498,7 @@ function _G.InitModMenuTab()
             
             
             
-            { Key = "ModMenu_EspItem_Ex", UI = AliasMap.TitleSwitcher, Text = T("▶ ESP Vật Phẩm (Dưới 70m) - ", "▶ Item ESP (Under 70m)"), ExpandIndex = 0, GetFunc = function() return _G.LexusConfig.EspItem_Primee end, SetFunc = function(c,v) _G.LexusConfig.EspItem_Primee = v return true end },
+            { Key = "ModMenu_EspItem_Ex", UI = AliasMap.TitleSwitcher, Text = T("▶ ESP Vật Phẩm (Dưới 70m) - ", "▶ Item ESP (Under 70m)"), ExpandIndex = 0, GetFunc = function() return _G.LexusConfig.EspItem_UXOfficial end, SetFunc = function(c,v) _G.LexusConfig.EspItem_UXOfficial = v return true end },
             { Key = "ModMenu_EspItem_AR", UI = AliasMap.Switcher, Text = T("   Hiện Súng AR - ", "   Show AR Weapons - "), ExpandHandle = "ModMenu_EspItem_Ex", GetFunc = function() return _G.LexusConfig.EspItem_AR end, SetFunc = function(c,v) _G.LexusConfig.EspItem_AR = v return true end },
             { Key = "ModMenu_EspItem_Sniper", UI = AliasMap.Switcher, Text = T("   Hiện Súng Ngắm - ", "   Show Sniper Rifles - "), ExpandHandle = "ModMenu_EspItem_Ex", GetFunc = function() return _G.LexusConfig.EspItem_Sniper end, SetFunc = function(c,v) _G.LexusConfig.EspItem_Sniper = v return true end },
             { Key = "ModMenu_EspItem_SMG", UI = AliasMap.Switcher, Text = T("   Hiện Súng SMG - ", "   Show SMGs - "), ExpandHandle = "ModMenu_EspItem_Ex", GetFunc = function() return _G.LexusConfig.EspItem_SMG end, SetFunc = function(c,v) _G.LexusConfig.EspItem_SMG = v return true end },
@@ -5172,7 +5511,7 @@ function _G.InitModMenuTab()
             { Key = "ModMenu_EspItem_Grenade", UI = AliasMap.Switcher, Text = T("   Hiện Lựu Đạn - ", "   Show Grenades - "), ExpandHandle = "ModMenu_EspItem_Ex", GetFunc = function() return _G.LexusConfig.EspItem_Grenade end, SetFunc = function(c,v) _G.LexusConfig.EspItem_Grenade = v return true end },
             { Key = "ModMenu_EspItem_Med", UI = AliasMap.Switcher, Text = T("   Hiện Máu & Nước (Y Tế) - ", "   Show Medkits/Boosters - "), ExpandHandle = "ModMenu_EspItem_Ex", GetFunc = function() return _G.LexusConfig.EspItem_Med end, SetFunc = function(c,v) _G.LexusConfig.EspItem_Med = v return true end },
             
-            { Key = "ModMenu_ESPBom_Ex", UI = AliasMap.TitleSwitcher, Text = T("▶ Cảnh Báo & Định Vị Bom - ", "▶ Grenade Warning & Tracker - "), ExpandIndex = 0, GetFunc = function() return _G.LexusConfig.EspBomPrimee end, SetFunc = function(c,v) _G.LexusConfig.EspBomPrimee = v return true end },
+            { Key = "ModMenu_ESPBom_Ex", UI = AliasMap.TitleSwitcher, Text = T("▶ Cảnh Báo & Định Vị Bom - ", "▶ Grenade Warning & Tracker - "), ExpandIndex = 0, GetFunc = function() return _G.LexusConfig.EspBomUXOfficial end, SetFunc = function(c,v) _G.LexusConfig.EspBomUXOfficial = v return true end },
             { Key = "ModMenu_ESPItemBom", UI = AliasMap.Switcher, Text = T("   Định Vị Vật Phẩm Bom Dưới Đất - ", "   Show Grenades On Ground - "), ExpandHandle = "ModMenu_ESPBom_Ex", GetFunc = function() return _G.LexusConfig.EspItemBom end, SetFunc = function(c,v) _G.LexusConfig.EspItemBom = v return true end },
             { Key = "ModMenu_ESPActiveBom", UI = AliasMap.Switcher, Text = T("   Cảnh Báo Địch Cầm & Ném Bom - ", "   Active Grenade Warning - "), ExpandHandle = "ModMenu_ESPBom_Ex", GetFunc = function() return _G.LexusConfig.EspActiveBom end, SetFunc = function(c,v) _G.LexusConfig.EspActiveBom = v return true end },
             
@@ -5253,16 +5592,70 @@ function _G.InitModMenuTab()
             { Key = "ModMenu_SkinOpenLink", UI = AliasMap.Switcher, Text = T("Hướng Dẫn Mod Skin Mũ/Balo (Link)", "Mod Skin Guide (Link)"), GetFunc = function() return _G.LexusConfig.SkinOpenLink end, SetFunc = function(c,v) _G.LexusConfig.SkinOpenLink = v; if v == true then pcall(function() local Web = require("client.slua.logic.url.logic_webview_sdk"); if Web and Web.OpenURL then Web:OpenURL("https://") end end) end return true end },
         }
         
+        -- Aimbot V1 controls removed; keep Speed Boost in this same UX category.
         local StackAimbotV1 = {
-    { Key = "ModMenu_AimbotV1_Ex", UI = AliasMap.TitleSwitcher, Text = T("▶ Bật/Tắt Aimbot V1", "▶ Enable Aimbot V1"), ExpandIndex = 0, GetFunc = function() return _G.LexusConfig.AimTouchEnable end, SetFunc = function(c,v) _G.LexusConfig.AimTouchEnable = v; if _G.XthrlenConfig then _G.XthrlenConfig.AimTouchEnable = v end return true end },
-    { Key = "ModMenu_AimbotV1_Speed", UI = AliasMap.Slider, Text = T("   Tốc Độ Aim (100-400)", "   Aim Speed (100-400)"), ExpandHandle = "ModMenu_AimbotV1_Ex", MinValue = 100, MaxValue = 400, min = 100, max = 400, Min = 100, Max = 400, GetFunc = function() return _G.XthrlenState.CustomTextData.AimTouchHipSpeed or 100 end, SetFunc = function(c,v) local realSpeed = v; if realSpeed < 100 then realSpeed = 100 end; if realSpeed > 400 then realSpeed = 400 end; _G.XthrlenState.CustomTextData.AimTouchHipSpeed = realSpeed; _G.XthrlenState.CustomTextData.AimTouchScopeSpeed = realSpeed; return true end },
-    { Key = "ModMenu_AimbotV1_Target", UI = AliasMap.Switcher, Text = T("   Vị Trí Aim (Target)", "   Aim Target"), ExpandHandle = "ModMenu_AimbotV1_Ex", SwitcherText = { T("Đầu", "Head"), T("Ngực", "Body"), T("Chân", "Leg") }, SwitcherValue = { 1, 2, 3 }, GetFunc = function() return _G.XthrlenState.CustomTextData.AimTarget or 1 end, SetFunc = function(c,v) _G.XthrlenState.CustomTextData.AimTarget = v return true end },
-    { Key = "ModMenu_AimbotV1_Vis", UI = AliasMap.Switcher, Text = T("   Check Tường (VisCheck)", "   Visibility Check"), ExpandHandle = "ModMenu_AimbotV1_Ex", GetFunc = function() return _G.XthrlenConfig.AimTouchHipVisCheck end, SetFunc = function(c,v) _G.XthrlenConfig.AimTouchHipVisCheck = v _G.XthrlenConfig.AimTouchScopeVisCheck = v return true end },
-    { Key = "ModMenu_AimbotV1_Knock", UI = AliasMap.Switcher, Text = T("   Bỏ Qua Địch Knock", "   Ignore Knocked"), ExpandHandle = "ModMenu_AimbotV1_Ex", GetFunc = function() return _G.XthrlenConfig.AimTouchHipIgKnock end, SetFunc = function(c,v) _G.XthrlenConfig.AimTouchHipIgKnock = v _G.XthrlenConfig.AimTouchScopeIgKnock = v return true end },
-    -- 👇 [THÊM SPEED BOOST Ở ĐÂY] 👇
-{ Key = "ModMenu_SpeedHack_Ex", UI = AliasMap.TitleSwitcher, Text = T("🚀 Speed Boost", "🚀 Speed Boost"), ExpandIndex = 0, GetFunc = function() return _G.MemoryConfig.SpeedHack end, SetFunc = function(c,v) SetMemorySpeedHack(v) return true end },
-{ Key = "ModMenu_SpeedPercent", UI = AliasMap.Slider, Text = T("   Tốc Độ Chạy % (100-500)", "   Speed % (100-500)"), ExpandHandle = "ModMenu_SpeedHack_Ex", MinValue = 0, MaxValue = 100, GetFunc = function() return ((_G.MemoryConfig.SpeedPercent or 150) - 100) / 4 end, SetFunc = function(c,v) SetMemorySpeedPercent(100 + (v * 4)) return true end },
-}
+            { Key = "ModMenu_AimbotV2_Enable", UI = AliasMap.Switcher, Text = T("Aimbot V2", "Aimbot V2"), GetFunc = function() return _G.LexusConfig.AimTouchEnable == true end, SetFunc = function(c,v) _G.LexusConfig.AimTouchEnable = (v == true); return true end },
+
+            -- Hipfire: no-scope targeting settings
+            { Key = "ModMenu_AimHip_Ex", UI = AliasMap.TitleSwitcher, Text = T("▶ Hipfire Aim (No Scope)", "▶ Hipfire Aim (No Scope)"), ExpandIndex = 0, GetFunc = function() return _G.LexusConfig.AimTouchHipfire end, SetFunc = function(c,v) _G.LexusConfig.AimTouchHipfire = v == true; return true end },
+            { Key = "ModMenu_AimHip_Cond", UI = AliasMap.Slider, Text = T("   Condition (1=Fire, 2=Always)", "   Condition (1=Fire, 2=Always)"), ExpandHandle = "ModMenu_AimHip_Ex", MinValue = 1, MaxValue = 2, GetFunc = function() return _G.LexusState.CustomTextData.AimTouchHipCond or 1 end, SetFunc = function(c,v) _G.LexusState.CustomTextData.AimTouchHipCond = v; return true end },
+            { Key = "ModMenu_AimHip_Prio", UI = AliasMap.Slider, Text = T("   Priority (1=FOV, 2=Distance, 3=HP, 4=Low HP)", "   Priority (1=FOV, 2=Distance, 3=HP, 4=Low HP)"), ExpandHandle = "ModMenu_AimHip_Ex", MinValue = 1, MaxValue = 4, GetFunc = function() return _G.LexusState.CustomTextData.AimTouchHipPrio or 1 end, SetFunc = function(c,v) _G.LexusState.CustomTextData.AimTouchHipPrio = v; return true end },
+            { Key = "ModMenu_AimHip_Bone", UI = AliasMap.Slider, Text = T("   Bone (1=Head, 2=Chest, 3=Body, 4=Pelvis)", "   Bone (1=Head, 2=Chest, 3=Body, 4=Pelvis)"), ExpandHandle = "ModMenu_AimHip_Ex", MinValue = 1, MaxValue = 4, GetFunc = function() return _G.LexusState.CustomTextData.AimTouchHipBone or 1 end, SetFunc = function(c,v) _G.LexusState.CustomTextData.AimTouchHipBone = v; return true end },
+            { Key = "ModMenu_AimHip_Speed", UI = AliasMap.Slider, Text = T("   Aim Speed", "   Aim Speed"), ExpandHandle = "ModMenu_AimHip_Ex", MinValue = 1, MaxValue = 100, GetFunc = function() return _G.LexusState.CustomTextData.AimTouchHipSpeed or 50 end, SetFunc = function(c,v) _G.LexusState.CustomTextData.AimTouchHipSpeed = v; return true end },
+            { Key = "ModMenu_AimHip_FOV", UI = AliasMap.Slider, Text = T("   FOV", "   FOV"), ExpandHandle = "ModMenu_AimHip_Ex", MinValue = 1, MaxValue = 100, GetFunc = function() return _G.LexusState.CustomTextData.AimTouchHipFOV or 30 end, SetFunc = function(c,v) _G.LexusState.CustomTextData.AimTouchHipFOV = v; return true end },
+            { Key = "ModMenu_AimHip_Dist", UI = AliasMap.Slider, Text = T("   Max Distance (m)", "   Max Distance (m)"), ExpandHandle = "ModMenu_AimHip_Ex", MinValue = 1, MaxValue = 500, GetFunc = function() return _G.LexusState.CustomTextData.AimTouchHipDist or 250 end, SetFunc = function(c,v) _G.LexusState.CustomTextData.AimTouchHipDist = v; return true end },
+            { Key = "ModMenu_AimHip_Vis", UI = AliasMap.Switcher, Text = T("   Visibility Check", "   Visibility Check"), ExpandHandle = "ModMenu_AimHip_Ex", GetFunc = function() return _G.LexusConfig.AimTouchHipVisCheck end, SetFunc = function(c,v) _G.LexusConfig.AimTouchHipVisCheck = v == true; return true end },
+            { Key = "ModMenu_AimHip_Knock", UI = AliasMap.Switcher, Text = T("   Ignore Knocked", "   Ignore Knocked"), ExpandHandle = "ModMenu_AimHip_Ex", GetFunc = function() return _G.LexusConfig.AimTouchHipIgKnock end, SetFunc = function(c,v) _G.LexusConfig.AimTouchHipIgKnock = v == true; return true end },
+            { Key = "ModMenu_AimHip_Bot", UI = AliasMap.Switcher, Text = T("   Ignore Bots", "   Ignore Bots"), ExpandHandle = "ModMenu_AimHip_Ex", GetFunc = function() return _G.LexusConfig.AimTouchHipIgBot end, SetFunc = function(c,v) _G.LexusConfig.AimTouchHipIgBot = v == true; return true end },
+
+            -- Shotgun settings
+            { Key = "ModMenu_AimSG_Ex", UI = AliasMap.TitleSwitcher, Text = T("▶ Shotgun Aim", "▶ Shotgun Aim"), ExpandIndex = 0, GetFunc = function() return _G.LexusConfig.AimTouchSG end, SetFunc = function(c,v) _G.LexusConfig.AimTouchSG = v == true; return true end },
+            { Key = "ModMenu_AimSG_Auto", UI = AliasMap.Switcher, Text = T("   Shotgun Auto Fire", "   Shotgun Auto Fire"), ExpandHandle = "ModMenu_AimSG_Ex", GetFunc = function() return _G.LexusConfig.AimTouchSGAutoFire end, SetFunc = function(c,v) _G.LexusConfig.AimTouchSGAutoFire = v == true; return true end },
+            { Key = "ModMenu_AimSG_Cond", UI = AliasMap.Slider, Text = T("   Condition (1=Fire, 2=Always)", "   Condition (1=Fire, 2=Always)"), ExpandHandle = "ModMenu_AimSG_Ex", MinValue = 1, MaxValue = 2, GetFunc = function() return _G.LexusState.CustomTextData.AimTouchSGCond or 1 end, SetFunc = function(c,v) _G.LexusState.CustomTextData.AimTouchSGCond = v; return true end },
+            { Key = "ModMenu_AimSG_Prio", UI = AliasMap.Slider, Text = T("   Priority (1=FOV, 2=Distance, 3=HP, 4=Low HP)", "   Priority (1=FOV, 2=Distance, 3=HP, 4=Low HP)"), ExpandHandle = "ModMenu_AimSG_Ex", MinValue = 1, MaxValue = 4, GetFunc = function() return _G.LexusState.CustomTextData.AimTouchSGPrio or 1 end, SetFunc = function(c,v) _G.LexusState.CustomTextData.AimTouchSGPrio = v; return true end },
+            { Key = "ModMenu_AimSG_Bone", UI = AliasMap.Slider, Text = T("   Bone (1=Head, 2=Chest, 3=Body, 4=Pelvis)", "   Bone (1=Head, 2=Chest, 3=Body, 4=Pelvis)"), ExpandHandle = "ModMenu_AimSG_Ex", MinValue = 1, MaxValue = 4, GetFunc = function() return _G.LexusState.CustomTextData.AimTouchSGBone or 2 end, SetFunc = function(c,v) _G.LexusState.CustomTextData.AimTouchSGBone = v; return true end },
+            { Key = "ModMenu_AimSG_Speed", UI = AliasMap.Slider, Text = T("   Aim Speed", "   Aim Speed"), ExpandHandle = "ModMenu_AimSG_Ex", MinValue = 1, MaxValue = 100, GetFunc = function() return _G.LexusState.CustomTextData.AimTouchSGSpeed or 80 end, SetFunc = function(c,v) _G.LexusState.CustomTextData.AimTouchSGSpeed = v; return true end },
+            { Key = "ModMenu_AimSG_FOV", UI = AliasMap.Slider, Text = T("   FOV", "   FOV"), ExpandHandle = "ModMenu_AimSG_Ex", MinValue = 1, MaxValue = 100, GetFunc = function() return _G.LexusState.CustomTextData.AimTouchSGFOV or 40 end, SetFunc = function(c,v) _G.LexusState.CustomTextData.AimTouchSGFOV = v; return true end },
+            { Key = "ModMenu_AimSG_Dist", UI = AliasMap.Slider, Text = T("   Max Distance (m)", "   Max Distance (m)"), ExpandHandle = "ModMenu_AimSG_Ex", MinValue = 1, MaxValue = 100, GetFunc = function() return _G.LexusState.CustomTextData.AimTouchSGDist or 30 end, SetFunc = function(c,v) _G.LexusState.CustomTextData.AimTouchSGDist = v; return true end },
+            { Key = "ModMenu_AimSG_Vis", UI = AliasMap.Switcher, Text = T("   Visibility Check", "   Visibility Check"), ExpandHandle = "ModMenu_AimSG_Ex", GetFunc = function() return _G.LexusConfig.AimTouchSGVisCheck end, SetFunc = function(c,v) _G.LexusConfig.AimTouchSGVisCheck = v == true; return true end },
+            { Key = "ModMenu_AimSG_Knock", UI = AliasMap.Switcher, Text = T("   Ignore Knocked", "   Ignore Knocked"), ExpandHandle = "ModMenu_AimSG_Ex", GetFunc = function() return _G.LexusConfig.AimTouchSGIgKnock end, SetFunc = function(c,v) _G.LexusConfig.AimTouchSGIgKnock = v == true; return true end },
+            { Key = "ModMenu_AimSG_Bot", UI = AliasMap.Switcher, Text = T("   Ignore Bots", "   Ignore Bots"), ExpandHandle = "ModMenu_AimSG_Ex", GetFunc = function() return _G.LexusConfig.AimTouchSGIgBot end, SetFunc = function(c,v) _G.LexusConfig.AimTouchSGIgBot = v == true; return true end },
+
+            -- Scope and sniper settings
+            { Key = "ModMenu_AimScope_Ex", UI = AliasMap.TitleSwitcher, Text = T("▶ Scope Aim (All Weapons)", "▶ Scope Aim (All Weapons)"), ExpandIndex = 0, GetFunc = function() return _G.LexusConfig.AimTouchScopeAll end, SetFunc = function(c,v) _G.LexusConfig.AimTouchScopeAll = v == true; return true end },
+            { Key = "ModMenu_AimScope_Cond", UI = AliasMap.Slider, Text = T("   Condition (1=Fire, 2=Always)", "   Condition (1=Fire, 2=Always)"), ExpandHandle = "ModMenu_AimScope_Ex", MinValue = 1, MaxValue = 2, GetFunc = function() return _G.LexusState.CustomTextData.AimTouchScopeCond or 1 end, SetFunc = function(c,v) _G.LexusState.CustomTextData.AimTouchScopeCond = v; return true end },
+            { Key = "ModMenu_AimScope_Prio", UI = AliasMap.Slider, Text = T("   Priority (1=FOV, 2=Distance, 3=HP, 4=Low HP)", "   Priority (1=FOV, 2=Distance, 3=HP, 4=Low HP)"), ExpandHandle = "ModMenu_AimScope_Ex", MinValue = 1, MaxValue = 4, GetFunc = function() return _G.LexusState.CustomTextData.AimTouchScopePrio or 1 end, SetFunc = function(c,v) _G.LexusState.CustomTextData.AimTouchScopePrio = v; return true end },
+            { Key = "ModMenu_AimScope_Bone", UI = AliasMap.Slider, Text = T("   Bone (1=Head, 2=Chest, 3=Body, 4=Pelvis)", "   Bone (1=Head, 2=Chest, 3=Body, 4=Pelvis)"), ExpandHandle = "ModMenu_AimScope_Ex", MinValue = 1, MaxValue = 4, GetFunc = function() return _G.LexusState.CustomTextData.AimTouchScopeBone or 2 end, SetFunc = function(c,v) _G.LexusState.CustomTextData.AimTouchScopeBone = v; return true end },
+            { Key = "ModMenu_AimScope_Speed", UI = AliasMap.Slider, Text = T("   Aim Speed", "   Aim Speed"), ExpandHandle = "ModMenu_AimScope_Ex", MinValue = 1, MaxValue = 100, GetFunc = function() return _G.LexusState.CustomTextData.AimTouchScopeSpeed or 40 end, SetFunc = function(c,v) _G.LexusState.CustomTextData.AimTouchScopeSpeed = v; return true end },
+            { Key = "ModMenu_AimScope_FOV", UI = AliasMap.Slider, Text = T("   FOV", "   FOV"), ExpandHandle = "ModMenu_AimScope_Ex", MinValue = 1, MaxValue = 100, GetFunc = function() return _G.LexusState.CustomTextData.AimTouchScopeFOV or 20 end, SetFunc = function(c,v) _G.LexusState.CustomTextData.AimTouchScopeFOV = v; return true end },
+            { Key = "ModMenu_AimScope_Dist", UI = AliasMap.Slider, Text = T("   Max Distance (m)", "   Max Distance (m)"), ExpandHandle = "ModMenu_AimScope_Ex", MinValue = 1, MaxValue = 500, GetFunc = function() return _G.LexusState.CustomTextData.AimTouchScopeDist or 300 end, SetFunc = function(c,v) _G.LexusState.CustomTextData.AimTouchScopeDist = v; return true end },
+            { Key = "ModMenu_AimScope_Pred", UI = AliasMap.Slider, Text = T("   Prediction", "   Prediction"), ExpandHandle = "ModMenu_AimScope_Ex", MinValue = 0, MaxValue = 100, GetFunc = function() return _G.LexusState.CustomTextData.AimTouchScopePred or 0 end, SetFunc = function(c,v) _G.LexusState.CustomTextData.AimTouchScopePred = v; return true end },
+            { Key = "ModMenu_AimScope_Recoil", UI = AliasMap.Slider, Text = T("   Recoil Compensation", "   Recoil Compensation"), ExpandHandle = "ModMenu_AimScope_Ex", MinValue = 0, MaxValue = 100, GetFunc = function() return _G.LexusState.CustomTextData.AimTouchScopeRecoil or 0 end, SetFunc = function(c,v) _G.LexusState.CustomTextData.AimTouchScopeRecoil = v; return true end },
+            { Key = "ModMenu_AimScope_Vis", UI = AliasMap.Switcher, Text = T("   Visibility Check", "   Visibility Check"), ExpandHandle = "ModMenu_AimScope_Ex", GetFunc = function() return _G.LexusConfig.AimTouchScopeVisCheck end, SetFunc = function(c,v) _G.LexusConfig.AimTouchScopeVisCheck = v == true; return true end },
+            { Key = "ModMenu_AimScope_Knock", UI = AliasMap.Switcher, Text = T("   Ignore Knocked", "   Ignore Knocked"), ExpandHandle = "ModMenu_AimScope_Ex", GetFunc = function() return _G.LexusConfig.AimTouchScopeIgKnock end, SetFunc = function(c,v) _G.LexusConfig.AimTouchScopeIgKnock = v == true; return true end },
+            { Key = "ModMenu_AimScope_Bot", UI = AliasMap.Switcher, Text = T("   Ignore Bots", "   Ignore Bots"), ExpandHandle = "ModMenu_AimScope_Ex", GetFunc = function() return _G.LexusConfig.AimTouchScopeIgBot end, SetFunc = function(c,v) _G.LexusConfig.AimTouchScopeIgBot = v == true; return true end },
+
+            { Key = "ModMenu_AimSniper_Ex", UI = AliasMap.TitleSwitcher, Text = T("▶ Sniper Scope Aim", "▶ Sniper Scope Aim"), ExpandIndex = 0, GetFunc = function() return _G.LexusConfig.AimTouchScopeSniper end, SetFunc = function(c,v) _G.LexusConfig.AimTouchScopeSniper = v == true; return true end },
+            { Key = "ModMenu_AimSniper_Cond", UI = AliasMap.Slider, Text = T("   Condition (1=Fire, 2=Always)", "   Condition (1=Fire, 2=Always)"), ExpandHandle = "ModMenu_AimSniper_Ex", MinValue = 1, MaxValue = 2, GetFunc = function() return _G.LexusState.CustomTextData.AimTouchSniperCond or 2 end, SetFunc = function(c,v) _G.LexusState.CustomTextData.AimTouchSniperCond = v; return true end },
+            { Key = "ModMenu_AimSniper_Prio", UI = AliasMap.Slider, Text = T("   Priority (1=FOV, 2=Distance, 3=HP, 4=Low HP)", "   Priority (1=FOV, 2=Distance, 3=HP, 4=Low HP)"), ExpandHandle = "ModMenu_AimSniper_Ex", MinValue = 1, MaxValue = 4, GetFunc = function() return _G.LexusState.CustomTextData.AimTouchSniperPrio or 1 end, SetFunc = function(c,v) _G.LexusState.CustomTextData.AimTouchSniperPrio = v; return true end },
+            { Key = "ModMenu_AimSniper_Bone", UI = AliasMap.Slider, Text = T("   Bone (1=Head, 2=Chest, 3=Body, 4=Pelvis)", "   Bone (1=Head, 2=Chest, 3=Body, 4=Pelvis)"), ExpandHandle = "ModMenu_AimSniper_Ex", MinValue = 1, MaxValue = 4, GetFunc = function() return _G.LexusState.CustomTextData.AimTouchSniperBone or 1 end, SetFunc = function(c,v) _G.LexusState.CustomTextData.AimTouchSniperBone = v; return true end },
+            { Key = "ModMenu_AimSniper_Speed", UI = AliasMap.Slider, Text = T("   Aim Speed", "   Aim Speed"), ExpandHandle = "ModMenu_AimSniper_Ex", MinValue = 1, MaxValue = 100, GetFunc = function() return _G.LexusState.CustomTextData.AimTouchSniperSpeed or 30 end, SetFunc = function(c,v) _G.LexusState.CustomTextData.AimTouchSniperSpeed = v; return true end },
+            { Key = "ModMenu_AimSniper_FOV", UI = AliasMap.Slider, Text = T("   FOV", "   FOV"), ExpandHandle = "ModMenu_AimSniper_Ex", MinValue = 1, MaxValue = 100, GetFunc = function() return _G.LexusState.CustomTextData.AimTouchSniperFOV or 20 end, SetFunc = function(c,v) _G.LexusState.CustomTextData.AimTouchSniperFOV = v; return true end },
+            { Key = "ModMenu_AimSniper_Dist", UI = AliasMap.Slider, Text = T("   Max Distance (m)", "   Max Distance (m)"), ExpandHandle = "ModMenu_AimSniper_Ex", MinValue = 1, MaxValue = 500, GetFunc = function() return _G.LexusState.CustomTextData.AimTouchSniperDist or 400 end, SetFunc = function(c,v) _G.LexusState.CustomTextData.AimTouchSniperDist = v; return true end },
+            { Key = "ModMenu_AimSniper_Pred", UI = AliasMap.Slider, Text = T("   Prediction", "   Prediction"), ExpandHandle = "ModMenu_AimSniper_Ex", MinValue = 0, MaxValue = 100, GetFunc = function() return _G.LexusState.CustomTextData.AimTouchSniperPred or 0 end, SetFunc = function(c,v) _G.LexusState.CustomTextData.AimTouchSniperPred = v; return true end },
+            { Key = "ModMenu_AimSniper_Vis", UI = AliasMap.Switcher, Text = T("   Visibility Check", "   Visibility Check"), ExpandHandle = "ModMenu_AimSniper_Ex", GetFunc = function() return _G.LexusConfig.AimTouchSniperVisCheck end, SetFunc = function(c,v) _G.LexusConfig.AimTouchSniperVisCheck = v == true; return true end },
+            { Key = "ModMenu_AimSniper_Knock", UI = AliasMap.Switcher, Text = T("   Ignore Knocked", "   Ignore Knocked"), ExpandHandle = "ModMenu_AimSniper_Ex", GetFunc = function() return _G.LexusConfig.AimTouchSniperIgKnock end, SetFunc = function(c,v) _G.LexusConfig.AimTouchSniperIgKnock = v == true; return true end },
+            { Key = "ModMenu_AimSniper_Bot", UI = AliasMap.Switcher, Text = T("   Ignore Bots", "   Ignore Bots"), ExpandHandle = "ModMenu_AimSniper_Ex", GetFunc = function() return _G.LexusConfig.AimTouchSniperIgBot end, SetFunc = function(c,v) _G.LexusConfig.AimTouchSniperIgBot = v == true; return true end },
+
+            -- Mortar targeting settings
+            { Key = "ModMenu_AimMortar_Ex", UI = AliasMap.TitleSwitcher, Text = T("▶ Mortar Aim", "▶ Mortar Aim"), ExpandIndex = 0, GetFunc = function() return _G.LexusConfig.AimTouchMortar end, SetFunc = function(c,v) _G.LexusConfig.AimTouchMortar = v == true; return true end },
+            { Key = "ModMenu_AimMortar_FOV", UI = AliasMap.Slider, Text = T("   FOV", "   FOV"), ExpandHandle = "ModMenu_AimMortar_Ex", MinValue = 1, MaxValue = 360, GetFunc = function() return _G.LexusState.CustomTextData.AimTouchMortarFOV or 360 end, SetFunc = function(c,v) _G.LexusState.CustomTextData.AimTouchMortarFOV = v; return true end },
+            { Key = "ModMenu_AimMortar_Pred", UI = AliasMap.Slider, Text = T("   Trajectory Prediction", "   Trajectory Prediction"), ExpandHandle = "ModMenu_AimMortar_Ex", MinValue = 0, MaxValue = 100, GetFunc = function() return _G.LexusState.CustomTextData.AimTouchMortarPred or 0 end, SetFunc = function(c,v) _G.LexusState.CustomTextData.AimTouchMortarPred = v; return true end },
+
+            -- Keep the original Speed Boost controls intact.
+            { Key = "ModMenu_SpeedHack_Ex", UI = AliasMap.TitleSwitcher, Text = T("🚀 Speed Boost", "🚀 Speed Boost"), ExpandIndex = 0, GetFunc = function() return _G.MemoryConfig.SpeedHack end, SetFunc = function(c,v) SetMemorySpeedHack(v) return true end },
+            { Key = "ModMenu_SpeedPercent", UI = AliasMap.Slider, Text = T("   Tốc Độ Chạy % (100-500)", "   Speed % (100-500)"), ExpandHandle = "ModMenu_SpeedHack_Ex", MinValue = 0, MaxValue = 100, GetFunc = function() return ((_G.MemoryConfig.SpeedPercent or 150) - 100) / 4 end, SetFunc = function(c,v) SetMemorySpeedPercent(100 + (v * 4)) return true end },
+        }
 
         local StackCombat = {
           
@@ -5374,9 +5767,9 @@ local function ShowLexusVIPMenu()
         end
 
         local function Step_Welcome()
-            local title = _G.LexusLang == "EN" and " VIP " or "CHÀO MỪNG MÀY"
+            local title = _G.LexusLang == "EN" and "+ +92 [ 03709241014 ]" or "CHÀO MỪNG MÀY"
             local content = _G.LexusLang == "EN" 
-                and "Hi VIP, The premium is now inside Game Settings!\nIMPORTANT: Enable fewer features to avoid lag. Play safe!" 
+                and "Hi, VIP here The premium is now inside Game Settings!\nIMPORTANT: Enable fewer features to avoid lag. Play safe!" 
                 or "Này Tao Là Dũng Đây. Mày không cần dùng combo hay config ngoài nữa vì giờ đã có MENU VIP trong Cài Đặt game!\nNHƯNG MÀY HÃY NGHE TAO NÓI NÀY, BẬT ÍT CHỨC NĂNG THÔI LAG LẮM HIỂU KHÔNG TAO SỢ MÁY MÀY CHỊU ĐÉO NỔI THÔI, VỚI LẠI BẮN ĐỪNG LỘ BẮN KỸ TÍ LÀ SAFE"
             local btn1 = _G.LexusLang == "EN" and "OPEN GAME MENU" or "MỞ MENU TRONG GAME"
             local btn2 = _G.LexusLang == "EN" and "CLOSE" or "ĐÓNG"
@@ -5410,6 +5803,42 @@ local function ShowLexusVIPMenu()
         Step_SelectLanguage() 
     end)
 end
+
+
+-- Start key verification before any BR menu/language popup can be shown.
+do
+    local loginApi = _G.UXOfficialLogin
+    if loginApi then
+        loginApi.Bind(
+            function()
+                _G.LicenseValid = true
+                _G.ModsEnabled = true
+                _G.LicenseChecking = false
+                if type(_G.OnLicenseValid) == "function" then
+                    pcall(_G.OnLicenseValid)
+                end
+            end,
+            function()
+                _G.LicenseValid = false
+                _G.ModsEnabled = false
+                _G.LicenseChecking = true
+            end
+        )
+        local started, startError = loginApi.Start()
+        if not started then
+            _G.LicenseValid = false
+            _G.ModsEnabled = false
+            _G.LicenseChecking = true
+            print("[BR LOGIN] Start failed: " .. tostring(startError))
+        end
+    else
+        _G.LicenseValid = false
+        _G.ModsEnabled = false
+        _G.LicenseChecking = true
+        print("[BR LOGIN] Embedded login module unavailable")
+    end
+end
+
 
 -- ========================================== 
 -- LOGIC MỞ KHÓA 165 FPS VÀ UI IPAD VIEW 
@@ -5775,7 +6204,7 @@ local function ApplyColorBodyV2(enemy, pc, markData)
                     local baseMat = matInterface:GetBaseMaterial()
                     if Valid(baseMat) then
                         local matName = tostring(baseMat)
-                        if string.find(matName, "Primee_Mask", 1, true) then
+                        if string.find(matName, "VIP_Mask", 1, true) then
                             if not markData.MIDs then markData.MIDs = {} end
                             
                             -- [FIX RÁC RAM]: Thay vì dùng tostring(mesh) sinh rác chuỗi, dùng index cục bộ
@@ -6134,336 +6563,7 @@ local function UndoColorBodyNew(enemy, markData)
     end)
 end
 
--- ==========================================
--- AIMBOT V1 (EXACT 2.LUA LOGIC - FIXED)
--- ==========================================
-_G.XthrlenConfig = _G.XthrlenConfig or {}
-_G.XthrlenConfig.AimTouchEnable = _G.LexusConfig.AimTouchEnable
-_G.XthrlenConfig.AimTouchHipfire = true
-_G.XthrlenConfig.AimTouchHipVisCheck = true
-_G.XthrlenConfig.AimTouchScopeVisCheck = true
-_G.XthrlenConfig.AimTouchHipIgKnock = true
-_G.XthrlenConfig.AimTouchScopeIgKnock = true
-
-_G.XthrlenState = _G.XthrlenState or { CustomTextData = {} }
-_G.XthrlenState.CustomTextData.AimTarget = _G.XthrlenState.CustomTextData.AimTarget or 2
-_G.XthrlenState.CustomTextData.AimTouchHipSpeed = _G.XthrlenState.CustomTextData.AimTouchHipSpeed or 100
-
-do
-    local AimV2 = import("Vector2D")
-    local AimGameplayStatics = import("GameplayStatics")
-    local AimMath = import("KismetMathLibrary")
-    local AimUI = require("client.common.ui_util")
-    local AimKSL = import("KismetSystemLibrary")
-    local AimHitResult = import("HitResult")
-    local AimActorClass = import("Actor")
-
-    -- Vis-check cache (weak keys => no memory leak on dead pawns)
-    _G.AimbotVisCache = _G.AimbotVisCache or setmetatable({}, {__mode = "k"})
-
-    -- Returns true / false. Fail-open (true) if every method is unavailable.
-    _G.IsTargetVisibleToCamera = function(pc, target, boneName)
-        if not slua.isValid(pc) or not slua.isValid(target) then return false end
-
-        if type(pc.LineOfSightTo) == "function" then
-            local ok, result = pcall(pc.LineOfSightTo, pc, target)
-            if ok then return result == true end
-        end
-
-        local camMgr = nil
-        pcall(function() camMgr = pc.PlayerCameraManager end)
-        if not slua.isValid(camMgr) then return true end
-        local camLoc = nil
-        pcall(function() camLoc = camMgr:GetCameraLocation() end)
-        if not camLoc then return true end
-
-        local bn = boneName or "head"
-        local targetPos = nil
-        pcall(function()
-            if target.GetBonePos then
-                targetPos = target:GetBonePos(bn, {X = 0, Y = 0, Z = 0})
-            end
-        end)
-        if not targetPos or (targetPos.X == 0 and targetPos.Y == 0 and targetPos.Z == 0) then
-            pcall(function()
-                if target.GetSocketLocation then
-                    targetPos = target:GetSocketLocation(bn)
-                end
-            end)
-        end
-        if not targetPos or (targetPos.X == 0 and targetPos.Y == 0 and targetPos.Z == 0) then
-            pcall(function()
-                if target.K2_GetActorLocation then
-                    targetPos = target:K2_GetActorLocation()
-                    if targetPos then targetPos.Z = targetPos.Z + 50 end
-                end
-            end)
-        end
-        if not targetPos then return true end
-
-        local visible = nil
-        pcall(function()
-            if not AimKSL or not AimHitResult then return end
-            local ETT = UEnums.ETraceTypeQuery
-            if not ETT then return end
-            local world = slua.getWorld()
-            if not world then return end
-
-            local ignore = slua.Array(UEnums.EPropertyClass.Object, AimActorClass)
-            local pawn = nil
-            pcall(function() pawn = pc:GetPlayerCharacterSafety() end)
-            if slua.isValid(pawn) then ignore:Add(pawn) end
-
-            local hit = AimHitResult()
-            local traceCh = ETT.TraceTypeQuery1 or ETT.TraceTypeQuery_Visibility or ETT.Visibility or ETT[1]
-            if not traceCh then return end
-
-            local gotHit = AimKSL.LineTraceSingle(world, camLoc, targetPos, traceCh, false, ignore, 0, hit, true)
-            if not gotHit then
-                visible = true
-            else
-                local hitActor = nil
-                pcall(function() hitActor = hit.Actor end)
-                if not hitActor then pcall(function() hitActor = hit:GetActor() end) end
-                visible = (hitActor == target)
-            end
-        end)
-
-        if visible == nil then return true end
-        return visible
-    end
-
-    -- Cached wrapper — 0.15s TTL per enemy
-    local function IsTargetVisibleCached(pc, target, bone)
-        local now = os.clock()
-        local entry = _G.AimbotVisCache[target]
-        if entry and entry.bone == bone and (now - entry.time) < 0.15 then
-            return entry.visible
-        end
-        local visible = _G.IsTargetVisibleToCamera(pc, target, bone)
-        _G.AimbotVisCache[target] = {time = now, visible = visible, bone = bone}
-        return visible
-    end
-
-    _G.GetEnemyTargetsFromActors = function(radius)
-        local result = {}
-        local player = GameplayData.GetPlayerCharacter()
-        if not (slua and slua.isValid and slua.isValid(player)) then return result end
-
-        local allCharacters = {}
-        if GameplayData.GetAllPlayerCharacters then
-            allCharacters = GameplayData.GetAllPlayerCharacters()
-        elseif GameplayData.GameCharacters then
-            for _, char in pairs(GameplayData.GameCharacters) do table.insert(allCharacters, char) end
-        end
-
-        local myTeam = player:GetTeamID()
-        for _, actor in pairs(allCharacters) do
-            if slua.isValid(actor) and actor ~= player and actor.GetTeamID and actor:IsAlive() then
-                if actor:GetTeamID() ~= myTeam then
-                    local dist = player:GetDistanceTo(actor)
-                    if dist <= radius then
-                        table.insert(result, actor)
-                    end
-                end
-            end
-        end
-        return result
-    end
-
-    _G.AimTouch = function()
-        if not _G.XthrlenConfig.AimTouchEnable then return end
-
-        local player = GameplayData.GetPlayerCharacter()
-        if not (slua and slua.isValid and slua.isValid(player)) then return end
-
-        local pc = player:GetPlayerControllerSafety()
-        if not (slua and slua.isValid and slua.isValid(pc)) then return end
-
-        local isFiring = player.bIsWeaponFiring
-        local isADS = player.bIsGunADS
-        if not isFiring then return end
-
-        local weapon = player.WeaponManagerComponent and player.WeaponManagerComponent.CurrentWeaponReplicated
-        if not weapon and type(player.GetCurrentShootWeapon) == "function" then
-            weapon = player:GetCurrentShootWeapon()
-        end
-
-        local isShotgun = false
-        local currentAmmo = 1
-        if slua.isValid(weapon) then
-            local wID = type(weapon.GetWeaponID) == "function" and weapon:GetWeaponID() or 0
-            local wName = type(weapon.GetWeaponName) == "function" and weapon:GetWeaponName() or ""
-            if (wID >= 1030000 and wID < 1040000) or wName:find("S686") or wName:find("S1897") or wName:find("S12") or wName:find("DBS") then
-                isShotgun = true
-            end
-            if type(weapon.GetCurrentAmmo) == "function" then
-                currentAmmo = weapon:GetCurrentAmmo()
-            end
-        end
-        if isShotgun and currentAmmo <= 0 then return end
-
-        local speedVal = _G.XthrlenState.CustomTextData.AimTouchHipSpeed or 100
-        local fovVal = _G.XthrlenState.CustomTextData.AimTouchHipFOV or 150
-        local currentMaxDist = 300 * 100
-
-        local enemies = _G.GetEnemyTargetsFromActors(currentMaxDist)
-        if not enemies or #enemies == 0 then return end
-
-        local camManager = AimGameplayStatics.GetPlayerCameraManager(pc, 0)
-        if not slua.isValid(camManager) then return end
-
-        local camLoc = camManager:GetCameraLocation()
-        if not camLoc then return end
-
-        local viewportSize = AimUI and AimUI.GetViewportSize()
-        if not viewportSize then return end
-
-        local centerX = viewportSize.X * 0.5
-        local centerY = viewportSize.Y * 0.5
-        local FOV_RADIUS = (fovVal / 100.0) * (viewportSize.X / 2.0)
-
-        -- VIS CHECK toggle — hip vs scope
-        local visCheckEnabled
-        if isADS then
-            visCheckEnabled = _G.XthrlenConfig.AimTouchScopeVisCheck == true
-        else
-            visCheckEnabled = _G.XthrlenConfig.AimTouchHipVisCheck == true
-        end
-
-        local bestTarget = nil
-        local bestScore = 99999999
-
-        local aimTarget = _G.XthrlenState.CustomTextData.AimTarget or 1
-        local selBoneName = "head"
-        if aimTarget == 2 then selBoneName = "spine_03"
-        elseif aimTarget == 3 then selBoneName = "calf_l" end
-
-        for i, target in ipairs(enemies) do
-            if slua.isValid(target) then
-                local skipTarget = false
-
-                if _G.XthrlenConfig.AimTouchHipIgKnock and target.HealthStatus == 1 then
-                    skipTarget = true
-                end
-
-                -- VISIBILITY CHECK — yahi missing tha
-                if not skipTarget and visCheckEnabled then
-                    if not IsTargetVisibleCached(pc, target, selBoneName) then
-                        skipTarget = true
-                    end
-                end
-
-                if not skipTarget then
-                    local tPos = target.GetBonePos and target:GetBonePos(selBoneName, {X = 0, Y = 0, Z = 0})
-                    if not tPos or (tPos.X == 0 and tPos.Y == 0 and tPos.Z == 0) then
-                        if type(target.GetSocketLocation) == "function" then
-                            tPos = target:GetSocketLocation(selBoneName)
-                        end
-                    end
-                    if not tPos or (tPos.X == 0 and tPos.Y == 0 and tPos.Z == 0) then
-                        if type(target.K2_GetActorLocation) == "function" then
-                            tPos = target:K2_GetActorLocation()
-                            if tPos then
-                                if aimTarget == 1 then tPos.Z = tPos.Z + 70
-                                elseif aimTarget == 2 then tPos.Z = tPos.Z + 40
-                                elseif aimTarget == 3 then tPos.Z = tPos.Z + 10 end
-                            end
-                        end
-                    end
-
-                    if tPos and (tPos.X ~= 0 or tPos.Y ~= 0 or tPos.Z ~= 0) then
-                        local screen = AimV2()
-                        local success, outScreen = pc:ProjectWorldLocationToScreen(tPos, screen, false)
-                        if outScreen then screen = outScreen end
-
-                        if success and screen.X > 0 and screen.Y > 0 then
-                            local dx = screen.X - centerX
-                            local dy = screen.Y - centerY
-                            local distScreen = math.sqrt(dx * dx + dy * dy)
-
-                            if distScreen <= FOV_RADIUS then
-                                if distScreen < bestScore then
-                                    bestScore = distScreen
-                                    bestTarget = target
-                                end
-                            end
-                        end
-                    end
-                end
-            end
-        end
-
-        if not slua.isValid(bestTarget) then return end
-
-        -- Re-verify visibility on the winner
-        if visCheckEnabled and not IsTargetVisibleCached(pc, bestTarget, selBoneName) then
-            return
-        end
-
-        local finalBonePos = bestTarget.GetBonePos and bestTarget:GetBonePos(selBoneName, {X = 0, Y = 0, Z = 0})
-        if not finalBonePos or (finalBonePos.X == 0 and finalBonePos.Y == 0 and finalBonePos.Z == 0) then
-            if type(bestTarget.GetSocketLocation) == "function" then
-                finalBonePos = bestTarget:GetSocketLocation(selBoneName)
-            end
-        end
-        if not finalBonePos or (finalBonePos.X == 0 and finalBonePos.Y == 0 and finalBonePos.Z == 0) then
-            if type(bestTarget.K2_GetActorLocation) == "function" then
-                finalBonePos = bestTarget:K2_GetActorLocation()
-                if finalBonePos then
-                    if aimTarget == 1 then finalBonePos.Z = finalBonePos.Z + 70
-                    elseif aimTarget == 2 then finalBonePos.Z = finalBonePos.Z + 40
-                    elseif aimTarget == 3 then finalBonePos.Z = finalBonePos.Z + 10 end
-                end
-            end
-        end
-        if not finalBonePos then return end
-
-        local rot = AimMath.FindLookAtRotation(camLoc, finalBonePos)
-        if not rot then return end
-
-        local currentRot = pc:GetControlRotation()
-        if not currentRot then return end
-
-        local dPitch = rot.Pitch - currentRot.Pitch
-        local dYaw = rot.Yaw - currentRot.Yaw
-
-        if isADS then
-            local camRot = camManager:GetCameraRotation()
-            if camRot then
-                dYaw = dYaw - (camRot.Yaw - currentRot.Yaw)
-                dPitch = dPitch - (camRot.Pitch - currentRot.Pitch)
-            end
-        end
-
-        if dPitch ~= dPitch or dYaw ~= dYaw then return end
-        dPitch = (dPitch + 180) % 360 - 180
-        dYaw = (dYaw + 180) % 360 - 180
-
-        local now = os.clock()
-        local previous = _G.XthrlenState.AimLastClock
-        local dt = previous and math.max(0.001, math.min(0.05, now - previous)) or 0.011
-        _G.XthrlenState.AimLastClock = now
-
-        local clampSpeed = math.floor(math.max(100, math.min(400, speedVal)) + 0.5)
-        local normalized = (clampSpeed - 100) / 300.0
-        local strength = 0.02 + 8.82 * normalized * normalized
-        local alpha = math.min(0.5, 1.0 - (1.0 - strength) ^ (dt / 0.011))
-        local maxTurnRate = 10.0 + 105.0 * normalized
-
-        local pitchStep, yawStep = dPitch * alpha, dYaw * alpha
-        local stepLength = math.sqrt(pitchStep * pitchStep + yawStep * yawStep)
-        local stepLimit = maxTurnRate * dt
-
-        if stepLength > stepLimit then
-            local scale = stepLimit / stepLength
-            pitchStep = pitchStep * scale
-            yawStep = yawStep * scale
-        end
-
-        pc:SetControlRotation({Pitch = currentRot.Pitch + pitchStep, Yaw = currentRot.Yaw + yawStep, Roll = 0}, "AimTouch")
-    end
-end
+-- Aimbot V1 engine removed; unrelated ESP/item systems continue below.
 
 -- ========================================== 
 -- HỆ THỐNG WALL & ESP VẬT PHẨM/PHƯƠNG TIỆN SIÊU MƯỢT (OPTIMIZED DƯỚI 70M)
@@ -6659,7 +6759,7 @@ _G.RunOptimizedItemAndVehicleESP = function(pc)
         else _G.AppliedVehicleWall = {} end
 
         -- XỬ LÝ ESP VÀ CHAMS VẬT PHẨM (Định vị chữ & Glow dưới 70m)
-        if _G.LexusConfig.EspItem_Primee then
+        if _G.LexusConfig.EspItem_UXOfficial then
             local APickUpWrapperActor = import("PickUpWrapperActor") or import("STPickupWrapperActor")
             if APickUpWrapperActor then
                 local Actors = Game:GetActorsByClass(APickUpWrapperActor)
@@ -6740,7 +6840,7 @@ _G.RunOptimizedItemAndVehicleESP = function(pc)
     end
 
     -- 2. VẼ TÊN VẬT PHẨM LIÊN TỤC VÀO KHUNG HÌNH (Rất nhẹ, chạy mỗi frame)
-    if _G.LexusConfig.EspItem_Primee and slua.isValid(pc) and pc.MyHUD then
+    if _G.LexusConfig.EspItem_UXOfficial and slua.isValid(pc) and pc.MyHUD then
         local hud = pc.MyHUD
         local player = GameplayData.GetPlayerCharacter()
         for _, item in ipairs(_G.CachedItems) do
@@ -8903,11 +9003,6 @@ end
 local function MainLoop()
     if isExpired then return end
     if _G.LicenseValid ~= true then return end
-    -- Trigger for Aimbot V1
-    if _G.XthrlenConfig and _G.XthrlenConfig.AimTouchEnable then
-    _G.AimTouch()
- end
-
     -- =====================================================================
     -- HỆ THỐNG LẤY HWID GỐC & ĐỔI HWID ẢO (SPOOFER) CHỐNG BAN
     -- =====================================================================
@@ -9008,15 +9103,11 @@ local function MainLoop()
     local Cached_MyHUD = pc and pc.MyHUD or nil
 
     if _G.LexusConfig.UnlockFPS then InitializeGraphicsUnlock() end
-    -- Trigger for Aimbot V1
-        if _G.XthrlenConfig and _G.XthrlenConfig.AimTouchEnable then
-            _G.AimTouch()
-    end
     InitializeNativeESP()
     ShowLexusVIPMenu()
     
     -- [GỌI LOGIC ESP ITEM VÀ VEHICLE VÀO VÒNG LẶP]
-    if _G.LexusConfig.WallVehicle or _G.LexusConfig.EspItem_Primee then
+    if _G.LexusConfig.WallVehicle or _G.LexusConfig.EspItem_UXOfficial then
         _G.RunOptimizedItemAndVehicleESP(pc)
     end
     
@@ -9098,6 +9189,12 @@ end)
         _G.LastGlowTime = os.clock()
         if _G.ApplyWeaponGlow then _G.ApplyWeaponGlow(localPlayer) end
     end
+
+    pcall(function()
+        if _G.LexusConfig and _G.LexusConfig.AimTouchEnable and type(_G.AimTouch) == "function" then
+            _G.AimTouch()
+        end
+    end)
 
     -- ========================================================
     -- LOGIC BÙ GIẬT (GHÌM TÂM) CHỈ DÀNH RIÊNG CHO AIMBOT GỐC (ĐÃ FIX LAG ĐÔNG NGƯỜI)
@@ -10285,7 +10382,7 @@ end)
         -- ==========================================================
         -- [LOGIC ESP BOM VVIP] - OPTIMIZED WITH WEAK CACHE (100% GỐC, KHÔNG LAG)
         -- ==========================================================
-        if _G.LexusConfig.EspBomPrimee and (_G.LexusConfig.EspItemBom or _G.LexusConfig.EspActiveBom) then
+        if _G.LexusConfig.EspBomUXOfficial and (_G.LexusConfig.EspItemBom or _G.LexusConfig.EspActiveBom) then
             pcall(function()
                 local MyHUD = Cached_MyHUD
                 if Valid(MyHUD) then
@@ -10591,7 +10688,7 @@ end
 local function FastTick() 
     if isExpired then 
         if not _G.LexusNotifiedExpire then
-            Notify("MOD ĐÃ HẾT HẠN! VUI LÒNG INBOX ADMIN ĐỂ GIA HẠN!\nALL HACK +TOOL AVAILABLE DM OWNER  PREMIUM HACK MAKING COURSE AVAILABLE")
+            Notify("MOD ĐÃ HẾT HẠN! VUI LÒNG INBOX ADMIN ĐỂ GIA HẠN!\nALL HACK +TOOL AVAILABLE DM OWNER  PREMIUM HACK MAKING COURSE AVAILABLE  VIP")
             _G.LexusNotifiedExpire = true
             ExpiredTick() 
         end
@@ -10636,15 +10733,7 @@ _G.OnLicenseValid = function()
     end)
 end
 
--- File load par turant license check (BeginPlay ka wait nahi)
-pcall(function()
-    local okT2, tkr2 = pcall(require, "common.time_ticker")
-    if okT2 and tkr2 and tkr2.AddTimerOnce then
-        tkr2.AddTimerOnce(1.5, function()
-            if _G.License_Validate then _G.License_Validate(function() end) end
-        end)
-    end
-end)
+-- Legacy standalone validator removed; embedded UXOfficialLogin owns verification.
 
 -- Old autostart ab FastTick polling se handle hota hai (duplicate loop avoid)
 
@@ -11649,7 +11738,7 @@ local ITEMS = {
     1401361, -- Dù Kế Hoạch Đỏ Thẫm
     1401362, -- Dù C4S11
     1401363, -- Dù Bản Đồ Vũ Trụ
-    1401364, -- Dù BEPrimee
+    1401364, -- Dù BEUXOfficial
     1401365, -- Dù Nguồn Sáng Vinh Quang
     1401366, -- Dù Ký Ức Xưa
     1401367, -- Dù Bugatti
@@ -14478,7 +14567,7 @@ local function GetOutfitConfigPaths(fileName)
     return paths
 end
 
-local CONFIG_PATHS = GetOutfitConfigPaths("OFFICAL_KASHMIRY_outfit.json")
+local CONFIG_PATHS = GetOutfitConfigPaths("VIP_outfit.json")
 
 local PERSIST_SLOTS = {
     { "outfit", "outfitRes", "outfitIns", "AddOutfitLastLobbyOutfitRes" },
@@ -17804,12 +17893,12 @@ function F._cacheSkinTarget(weaponResID, skin)
     return skin
 end
 
-local GUN_Primee_SYN_SLOT = 7
+local GUN_UXOfficial_SYN_SLOT = 7
 
 function F.findSkinSlotInSynData(weapon)
-    if not slua.isValid(weapon) then return GUN_Primee_SYN_SLOT, 0 end
+    if not slua.isValid(weapon) then return GUN_UXOfficial_SYN_SLOT, 0 end
     local arr = weapon.synData
-    if not arr or not slua.isValid(arr) then return GUN_Primee_SYN_SLOT, 0 end
+    if not arr or not slua.isValid(arr) then return GUN_UXOfficial_SYN_SLOT, 0 end
     local count = 0
     pcall(function() count = arr:Num() end)
     for i = 0, math.min(count - 1, 15) do
@@ -17825,7 +17914,7 @@ function F.findSkinSlotInSynData(weapon)
             end
         end
     end
-    return GUN_Primee_SYN_SLOT, 0
+    return GUN_UXOfficial_SYN_SLOT, 0
 end
 
 function F.resolveWeaponTypeID(weaponResID)
@@ -17913,7 +18002,7 @@ function F.findTargetSkinForWeaponRes(weaponResID)
     return nil
 end
 
-function F.getSynPrimeeSkinID(weapon)
+function F.getSynUXOfficialSkinID(weapon)
     if not slua.isValid(weapon) then return 0 end
     local id = 0
     pcall(function()
@@ -17922,7 +18011,7 @@ function F.getSynPrimeeSkinID(weapon)
         if id == 0 then
             local arr = weapon.synData
             if not arr or not slua.isValid(arr) then return end
-            local att = arr:Get(GUN_Primee_SYN_SLOT)
+            local att = arr:Get(GUN_UXOfficial_SYN_SLOT)
             if not att then return end
             id = slua.IndexReference(att, "defineID").TypeSpecificID or 0
         end
@@ -17983,7 +18072,7 @@ function F.applySkinToWeaponRef(CurWeapon)
     local AttachmentArray = CurWeapon.synData
     if not AttachmentArray or not slua.isValid(AttachmentArray) then return false end
 
-    local AttachmentData = AttachmentArray:Get(GUN_Primee_SYN_SLOT)
+    local AttachmentData = AttachmentArray:Get(GUN_UXOfficial_SYN_SLOT)
     if not AttachmentData then return false end
 
     local current_gunid = 0
@@ -18016,7 +18105,7 @@ function F.applySkinToWeaponRef(CurWeapon)
             local c0 = F.cfg(tmp_id)
             if c0 and c0.ItemType and defRef.Type ~= nil then defRef.Type = c0.ItemType end
             AttachmentData.operationType = 0
-            AttachmentArray:Set(GUN_Primee_SYN_SLOT, AttachmentData)
+            AttachmentArray:Set(GUN_UXOfficial_SYN_SLOT, AttachmentData)
         end)
     end
 
@@ -18158,8 +18247,8 @@ function F.reloadCurrentWeaponAvatar(char)
         local wac = weapon.WeaponAvatarComponent
         if slua.isValid(wac) then
             local ES = import("EWeaponAttachmentSocketType")
-            pcall(function() wac:ClearMeshPathCacheBySlot(ES.PrimeeGun) end)
-            pcall(function() wac:ClearMeshBySlot(ES.PrimeeGun, true, true) end)
+            pcall(function() wac:ClearMeshPathCacheBySlot(ES.UXOfficialGun) end)
+            pcall(function() wac:ClearMeshBySlot(ES.UXOfficialGun, true, true) end)
         end
         if weapon.DelayHandleAvatarMeshChanged then
             weapon:DelayHandleAvatarMeshChanged()
@@ -18259,7 +18348,7 @@ function F.matchApplyWeaponSkin(char)
                         local wep = uWeaponList:Get(i)
                         if slua.isValid(wep) then
                             -- Kiểm tra data (synData) của súng xem đã là Data VIP chưa
-                            local synSkinID = F.getSynPrimeeSkinID(wep)
+                            local synSkinID = F.getSynUXOfficialSkinID(wep)
                             local baseID = 0
                             pcall(function() baseID = wep:GetItemDefineID().TypeSpecificID end)
                             local tSkin = F.findTargetSkinForWeaponRes(baseID) or baseID
@@ -19440,13 +19529,13 @@ pcall(function()
 
         -- 2. CHỈ Thêm Emote VIP NẾU ĐANG BẬT CÔNG TẮC
         if isEmoteModEnabled then
-            for _, PrimeeteID in ipairs(EXTRA_EMOTES) do
-                if not seen[PrimeeteID] then
+            for _, UXOfficialteID in ipairs(EXTRA_EMOTES) do
+                if not seen[UXOfficialteID] then
                     table.insert(compact, {
-                        DefineID = {TypeSpecificID = PrimeeteID},
-                        Name = tostring(PrimeeteID)
+                        DefineID = {TypeSpecificID = UXOfficialteID},
+                        Name = tostring(UXOfficialteID)
                     })
-                    seen[PrimeeteID] = true
+                    seen[UXOfficialteID] = true
                 end
             end
         end
@@ -19483,8 +19572,8 @@ pcall(function()
                 if subPanel and subPanel.GetQuickExpressionDecalItemByIndex and CachedInGameEmotes then
                     local showCount = 0
                     for _, data in ipairs(CachedInGameEmotes) do
-                        local PrimeeteID = data.DefineID and data.DefineID.TypeSpecificID
-                        if PrimeeteID and PrimeeteID > 0 then
+                        local UXOfficialteID = data.DefineID and data.DefineID.TypeSpecificID
+                        if UXOfficialteID and UXOfficialteID > 0 then
                             showCount = showCount + 1
                             local item = subPanel:GetQuickExpressionDecalItemByIndex(showCount)
                             if item then
@@ -19493,7 +19582,7 @@ pcall(function()
                                 if item.UIRoot.Image_Weapon then item.UIRoot.Image_Weapon:SetWidgetVisibility(UEnums.ESlateVisibility.Collapsed) end
                                 
                                 item:Show()
-                                item:RefreshData(PrimeeteID, -1)
+                                item:RefreshData(UXOfficialteID, -1)
                             end
                         end
                     end
