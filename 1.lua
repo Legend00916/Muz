@@ -582,10 +582,10 @@ end)()
         if not d then return end
         d.Visible=false
         if d.Event and d.Handle~=nil then pcall(function() d.Event:Remove(d.Handle) end) end
-        if d.GetKeyEvent and d.GetKeyHandle~=nil then pcall(function() d.GetKeyEvent:Remove(d.GetKeyHandle) end) end
+        if d.InputCommitEvent and d.InputCommitHandle~=nil then pcall(function() d.InputCommitEvent:Remove(d.InputCommitHandle) end) end
         if valid(d.Container) then pcall(function() d.Container:RemoveFromParent() end) end
-        d.Submit=nil;d.Event=nil;d.Handle=nil;d.GetKeyEvent=nil;d.GetKeyHandle=nil;d.Container=nil;d.Parent=nil
-        d.Input=nil;d.Button=nil;d.GetKeyButton=nil;d.Status=nil;d.Title=nil;d.Detail=nil;d.Hint=nil;d.Design=nil;d.Cache=nil
+        d.Submit=nil;d.Event=nil;d.Handle=nil;d.InputCommitEvent=nil;d.InputCommitHandle=nil;d.Container=nil;d.Parent=nil
+        d.Input=nil;d.Button=nil;d.Status=nil;d.Title=nil;d.Detail=nil;d.Hint=nil;d.Design=nil;d.Cache=nil
     end
     -- Approved red/green frame, dark red/green heading, light full-color body.
     -- All gradient/angle/brush work happens at construction. No animation,
@@ -794,7 +794,7 @@ end)()
             panel(10,10,W-20,65,16,gold,4,24,1)
             panel(13,13,W-26,59,14,header,5,32,1)
             if welcome then
-                d.Title=text("Welcome to VIP Server",24,22,W-48,42,19,white,7,true,true)
+                d.Title=text("Welcome to VIP Lua mod",24,22,W-48,42,19,white,7,true,true)
                 local pw=math.min(340,W-72);local px=(W-pw)/2
                 panel(px,99,pw,51,12,gold,4,16)
                 panel(px+3,102,pw-6,45,10,{{4,19,42},{13,68,132},{4,28,64}},5,20)
@@ -853,17 +853,23 @@ end)()
                 -- field never changes the value sent to the existing verifier.
                 d.KeyVisible=false
                 d.SecretKey=key or ""
-                d.UsingMaskFallback=true
-                pcall(function() d.Input:SetText(string.rep("*",#d.SecretKey)) end)
-                pcall(function() d.Input:SetIsReadOnly(true) end)
+                d.UsingMaskFallback=false
+                -- Keep the native EditableTextBox editable so a tap opens the Android keyboard.
+                pcall(function() d.Input:SetText(d.SecretKey) end)
+                pcall(function() d.Input:SetIsReadOnly(false) end)
+                pcall(function() d.Input:SetIsPassword(false) end)
                 visibility(d.Input,enums.Visible);add(d.Input,23,107,W-100,35,8,true)
 
                 -- Eye control placed inside the right edge of the original key field.
                 d.EyeButton=make("Button",d.Container)
-                panel(W-70,108,43,34,7,{{5,40,92},{10,93,192},{4,46,108}},5,12)
+                -- Large transparent hit target exactly over the eye icon.
+                panel(W-78,101,58,48,7,{{5,40,92},{10,93,192},{4,46,108}},5,12)
                 pcall(function() d.EyeButton:SetBackgroundColor(color(255,255,255,0)) end)
+                pcall(function() d.EyeButton:SetIsEnabled(true) end)
+                pcall(function() d.EyeButton:SetIsFocusable(false) end)
+                pcall(function() d.EyeButton:SetVisibility(enums.Visible) end)
                 visibility(d.EyeButton,enums.Visible)
-                add(d.EyeButton,W-70,108,43,34,10,true)
+                add(d.EyeButton,W-78,101,58,48,12000,true)
                 local ex,ey=W-48.5,125
                 local eyeColor=color(190,235,255)
                 line(ex-11,ey,ex-5,ey-5,2,eyeColor,12)
@@ -876,21 +882,31 @@ end)()
                 line(ex-5,ey+5,ex-11,ey,2,eyeColor,12)
                 rect(ex-2,ey-2,4,4,eyeColor,13,1)
                 rect(ex-1,ey-1,2,2,color(5,40,92),14,1)
-                d.EyeEvent=d.EyeButton.OnClicked
-                d.EyeHandle=d.EyeEvent:Add(function()
-                    if not d.Visible then return end
-                    if not d.KeyVisible then
+                local function toggleKeyVisibility()
+                    if not d.Visible or not d.Input or d.EyeBusy then return end
+                    d.EyeBusy=true
+                    local okRead,current=pcall(function() return d.Input:GetText() end)
+                    if okRead and type(current)=="string" then d.SecretKey=current end
+                    local nextVisible=not d.KeyVisible
+                    -- Apply the native password-mask property, then restore the exact text.
+                    local changed=pcall(function() d.Input:SetIsPassword(not nextVisible) end)
+                    if changed then
                         pcall(function() d.Input:SetText(d.SecretKey or "") end)
-                        pcall(function() d.Input:SetIsReadOnly(false) end)
-                        d.KeyVisible=true
-                    else
-                        local okRead,current=pcall(function() return d.Input:GetText() end)
-                        if okRead and type(current)=="string" then d.SecretKey=current end
-                        pcall(function() d.Input:SetText(string.rep("*",#(d.SecretKey or ""))) end)
-                        pcall(function() d.Input:SetIsReadOnly(true) end)
-                        d.KeyVisible=false
+                        d.KeyVisible=nextVisible
                     end
-                end)
+                    d.EyeBusy=false
+                end
+                -- Bind one pointer event only, preventing a double-toggle per tap.
+                local pressed=member(d.EyeButton,"OnPressed")
+                if pressed and type(member(pressed,"Add"))=="function" then
+                    d.EyeEvent=pressed
+                    d.EyeHandle=pressed:Add(toggleKeyVisibility)
+                else
+                    d.EyeEvent=d.EyeButton.OnClicked
+                    if d.EyeEvent and type(member(d.EyeEvent,"Add"))=="function" then
+                        d.EyeHandle=d.EyeEvent:Add(toggleKeyVisibility)
+                    end
+                end
 
                 d.Hint=text("Your key is saved automatically",22,149,W-44,19,11,burgundy,7,false,false)
                 d.Status=text(status or "Enter your key",22,170,W-44,23,11,burgundy,8,false,false,true)
@@ -921,28 +937,27 @@ end)()
                     if l and l.WelcomeUI==d then l.WelcomeUI=nil;l.Dismissed=true;l.NeedsUpdate=false end
                 end)
             else
-                local bw=190
-                d.GetKeyButton,d.GetKeyEvent,d.GetKeyHandle=makeActionButton("GET KEY",35,bw,function()
-                    if not d.Visible or d.Busy then return end
-                    pcall(function()
-                        local Web=require("client.slua.logic.url.logic_webview_sdk")
-                        if Web and Web.OpenURL then Web:OpenURL("https://") end
-                    end)
-                end)
-                d.Button,d.Event,d.Handle=makeActionButton("LOGIN",275,bw,function()
+                local bw=300
+                local function submitCurrentKey()
                     if not d.Visible or d.Busy then return end
                     local okRead,k=pcall(function() return d.Input:GetText() end)
-                    if d.KeyVisible and okRead and type(k)=="string" then
-                        d.SecretKey=k
-                    elseif not d.KeyVisible then
-                        k=d.SecretKey or ""
-                        okRead=true
-                    end
                     if not okRead or type(k)~="string" then return end
+                    d.SecretKey=k
                     k=k:match("^%s*(.-)%s*$")
                     if #k==0 or #k>512 then d.Status:SetText("Enter a valid key");return end
                     if d.Submit then d.Submit(k) end
-                end)
+                end
+                local committed=member(d.Input,"OnTextCommitted")
+                if committed and type(member(committed,"Add"))=="function" then
+                    local added,handle=pcall(function()
+                        return committed:Add(function(value,commitMethod)
+                            if type(value)=="string" then d.SecretKey=value end
+                            submitCurrentKey()
+                        end)
+                    end)
+                    if added then d.InputCommitEvent=committed;d.InputCommitHandle=handle end
+                end
+                d.Button,d.Event,d.Handle=makeActionButton("LOGIN",(W-bw)/2,bw,submitCurrentKey)
             end
             renderArt()
 
@@ -969,7 +984,7 @@ end)()
     end
     local current=_G.LunarLoginRuntime
     -- Existing runtime survives character recreation and source reload in this process.
-    local expectedScope=UXOfficialLicenseCore.Primitives.md5(UXOfficialLicenseConfig.url.."\0"..UXOfficialLicenseConfig.game.."\0"..UXOfficialLicenseConfig.secret)
+    local expectedScope=UXOfficialLicenseCore.Primitives.md5(UXOfficialLicenseConfig.url.."\0".."PUBG".."\0"..UXOfficialLicenseConfig.secret)
     if not current or current.Scope~=expectedScope then
         if current and current.DestroyUI then current.DestroyUI() end
         local L={Authorized=false,Pending=false,NeedsUpdate=true,WelcomeShown=false,
@@ -1155,7 +1170,7 @@ end)()
             wall=function() return os.time() end,
             serial=function(key)
                 L.EnsureIdentity()
-                return UXOfficialLicenseCore.Primitives.name_uuid('VIP-LUA-V1\0'..key..'\0'..L.Seed)
+                return UXOfficialLicenseCore.Primitives.name_uuid('Primee-LUA-V1\0'..key..'\0'..L.Seed)
             end,
             decode=function(raw) local json=require("common.json_util");return json.decode(raw) end,
             post=function(url,headers,body,callback,timeout)
@@ -1175,7 +1190,7 @@ end)()
                     if d.StatusText~=message then d.Status:SetText(message);d.StatusText=message end
                     if d.Busy~=L.Pending then
                         d.Busy=L.Pending
-                        pcall(function() d.Input:SetIsEnabled(not L.Pending);d.Button:SetIsEnabled(not L.Pending);if d.GetKeyButton then d.GetKeyButton:SetIsEnabled(not L.Pending) end end)
+                        pcall(function() d.Input:SetIsEnabled(not L.Pending);d.Button:SetIsEnabled(not L.Pending) end)
                     end
                 end
                 wake()
@@ -1209,7 +1224,7 @@ end)()
                 local d=UI.Build("login",L.Key,L.Status,L.Login)
                 if d then
                     d.Busy=L.Pending;d.StatusText=L.Status;L.LoginUI=d
-                    pcall(function() d.Input:SetIsEnabled(not L.Pending);d.Button:SetIsEnabled(not L.Pending);if d.GetKeyButton then d.GetKeyButton:SetIsEnabled(not L.Pending) end end)
+                    pcall(function() d.Input:SetIsEnabled(not L.Pending);d.Button:SetIsEnabled(not L.Pending) end)
                 end
             end
             L.NeedsUpdate=true -- Half-second retry/readiness while locked only.
@@ -5416,6 +5431,7 @@ function SetMemorySpeedPercent(val)
 end
 
 function _G.InitModMenuTab()
+    _G.LexusLang = "EN"
     if _G.ModMenuInitialized then return end
     _G.ModMenuInitialized = true
 
@@ -5437,9 +5453,9 @@ function _G.InitModMenuTab()
         LocUtil = require("client.common.LocUtil")
     end
     
-    -- 1. TẠO BẢNG ID ẢO VỚI TEXT MỚI (Hỗ trợ 2 ngôn ngữ)
+    -- INGAME HIDDEN MENU (VIP MENU)
     local FakeTextMap = {
-        [999000] = T(" MOD FREE Cẩn Thận Bị Lừa Mod Chủ Quyền", "VIP MENU"),
+        [999000] = T(" MOD FREE Cẩn Thận Bị Lừa Mod Chủ Quyền", ""),
         [999001] = T("HIỂN THỊ (ESP)", "VISUALS (ESP) MENU"),
      [999002] = T("AIMBOT GỐC & ĐẠN MENU", "NATIVE HIGH & RISK TRACK"),
        [999003] = T("AIMBOT ROYAL - CUSTOM ( Aim Gần - Aim Scope )", "CUSTOM AIMBOT (Close & Scope)"),
@@ -5710,7 +5726,7 @@ function _G.InitModMenuTab()
            }
         }
         
-        table.insert(SettingCatalog, 1, SettingPageDefine.ModMenu)
+        table.insert(SettingCatalog, #SettingCatalog + 1, SettingPageDefine.ModMenu)
     end
 
     local UIManager = _G.UIManager
@@ -5733,7 +5749,7 @@ function _G.InitModMenuTab()
                             end
                         end
                         if not hasModMenu then
-                            table.insert(catalog, 1, SettingPageDefine.ModMenu)
+                            table.insert(catalog, #catalog + 1, SettingPageDefine.ModMenu)
                         end
                     end
                 end
@@ -5753,23 +5769,10 @@ local function ShowLexusVIPMenu()
         local Msg = require("client.slua.logic.common.logic_common_msg_box")
         if not Msg or not Msg.Show then return end
 
-        local function Step_ScamAlert()
-            local title = _G.LexusLang == "EN" and "SCAM ALERT" or "CẢNH BÁO SCAM MOD"
-            local content = _G.LexusLang == "EN" 
-                and "Join my Telegram to avoid scammers owner VIP" 
-                or "Tham Gia Telegram Tôi Để Tránh Các Thành Phần Bán Mod Free. Zalo _ TELE _\nĐỊT MẸ NHỮNG CON CHÓ ĂN CẮP MOD BỐ DŨNG XONG MÚA NÀY NỌ NHỤC CHẾT MẸ HAHAHA TAO CHỈ CÓ DUY NHẤT 1 TÀI KHOẢN TELE 1 TÀI KHOẢN ZALO NHÉ CẨN THẬN NHÉ"
-            local btn1 = _G.LexusLang == "EN" and "JOIN" or "THAM GIA"
-            local btn2 = _G.LexusLang == "EN" and "CLOSE" or "ĐÓNG"
-
-            Msg.Show(1, title, content, function() local Web = require("client.slua.logic.url.logic_webview_sdk"); if Web and Web.OpenURL then Web:OpenURL("https://") end end, function() end, btn1, btn2)
-            _G.LexusState.MenuStep = 99
-            _G.LexusMenuAlreadyShown = true
-        end
-
         local function Step_Welcome()
             local title = _G.LexusLang == "EN" and "Announcement" or "CHÀO MỪNG MÀY"
             local content = _G.LexusLang == "EN" 
-                and "Hi, VIP The premium is now inside Game Settings!\nIMPORTANT: Enable fewer features to avoid lag. Play safe!" 
+                and "Play Safe & Avoid Reports \n Must Send Your Feedbacks :)" 
                 or "Này Tao Là Dũng Đây. Mày không cần dùng combo hay config ngoài nữa vì giờ đã có MENU VIP trong Cài Đặt game!\nNHƯNG MÀY HÃY NGHE TAO NÓI NÀY, BẬT ÍT CHỨC NĂNG THÔI LAG LẮM HIỂU KHÔNG TAO SỢ MÁY MÀY CHỊU ĐÉO NỔI THÔI, VỚI LẠI BẮN ĐỪNG LỘ BẮN KỸ TÍ LÀ SAFE"
             local btn1 = _G.LexusLang == "EN" and "OPEN GAME MENU" or "MỞ MENU TRONG GAME"
             local btn2 = _G.LexusLang == "EN" and "CLOSE" or "ĐÓNG"
@@ -5782,23 +5785,16 @@ local function ShowLexusVIPMenu()
                 else
                     Notify("ĐÃ THÊM 'VIP MOD MENU' VÀO PHẦN CÀI ĐẶT CỦA GAME!\nHãy mở Cài Đặt (Răng Cưa) -> VIP MOD MENU để bật/tắt.")
                 end
-                Step_ScamAlert()
             end, 
             function() end, btn1, btn2)
         end
 
         local function Step_SelectLanguage()
-            Msg.Show(2, "SELECT LANGUAGE / CHỌN NGÔN NGỮ", "Please select your preferred language.\nVui lòng chọn ngôn ngữ bạn muốn sử dụng.",
-            function()
-                _G.LexusLang = "VN"
-                Step_Welcome()
-            end,
-            function()
-                _G.LexusLang = "EN"
-                Step_Welcome()
-            end, "TIẾNG VIỆT", "ENGLISH")
+            _G.LexusLang = "EN"
+            Step_Welcome()
         end
 
+        _G.LexusLang = "EN"
         _G.LexusState.MenuStep = 1
         Step_SelectLanguage() 
     end)
